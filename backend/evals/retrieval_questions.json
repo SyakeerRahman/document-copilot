@@ -1,0 +1,244 @@
+[
+  {
+    "id": "aapl-2025-category-mix",
+    "question": "How did Apple's net sales for iPhone, Mac, iPad, Wearables and Services change in fiscal 2025?",
+    "ticker": "AAPL",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "net sales by category"
+      ]
+    ]
+  },
+  {
+    "id": "aapl-2021-category-mix",
+    "question": "What was Apple's revenue mix across iPhone, Mac, iPad, Wearables and Services in 2021?",
+    "ticker": "AAPL",
+    "fiscal_year": 2021,
+    "expect_any": [
+      [
+        "net sales by category"
+      ],
+      [
+        "Net sales disaggregated by significant products and services"
+      ]
+    ]
+  },
+  {
+    "id": "aapl-2025-greater-china",
+    "question": "How did Apple's sales in Greater China and other regions change?",
+    "ticker": "AAPL",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "net sales by reportable segment"
+      ]
+    ]
+  },
+  {
+    "id": "aapl-2025-limited-suppliers",
+    "question": "Does Apple rely on a small number of suppliers for key components?",
+    "ticker": "AAPL",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "single or limited source"
+      ]
+    ]
+  },
+  {
+    "id": "amzn-2025-segment-operating-income",
+    "question": "What was AWS operating income compared with the North America and International segments?",
+    "ticker": "AMZN",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "Operating income (loss) by segment"
+      ],
+      [
+        "AWS\nNet sales",
+        "Operating income"
+      ]
+    ]
+  },
+  {
+    "id": "amzn-2022-aws-growth",
+    "question": "Why did AWS revenue grow in 2022?",
+    "ticker": "AMZN",
+    "fiscal_year": 2022,
+    "expect_any": [
+      [
+        "AWS sales increased"
+      ]
+    ]
+  },
+  {
+    "id": "amzn-2024-capex",
+    "question": "How much did Amazon spend on property and equipment, and what was it for?",
+    "ticker": "AMZN",
+    "fiscal_year": 2024,
+    "expect_any": [
+      [
+        "cash capital expenditures"
+      ]
+    ]
+  },
+  {
+    "id": "amzn-2023-workforce",
+    "question": "How many people does Amazon employ?",
+    "ticker": "AMZN",
+    "fiscal_year": 2023,
+    "expect_any": [
+      [
+        "full-time and part-time employees"
+      ]
+    ]
+  },
+  {
+    "id": "nvda-2025-customer-concentration",
+    "question": "Did a few large customers account for a big share of NVIDIA's revenue?",
+    "ticker": "NVDA",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "Concentration of Revenue"
+      ],
+      [
+        "direct customers",
+        "% of total revenue"
+      ]
+    ]
+  },
+  {
+    "id": "nvda-2024-china-export-rules",
+    "question": "How do US restrictions on selling chips to China affect NVIDIA?",
+    "ticker": "NVDA",
+    "fiscal_year": 2024,
+    "expect_any": [
+      [
+        "Increasing use of economic sanctions and export controls"
+      ],
+      [
+        "Export controls could disrupt our supply chain"
+      ],
+      [
+        "not received licenses to ship these restricted products to China"
+      ]
+    ]
+  },
+  {
+    "id": "nvda-2025-foundry",
+    "question": "Which companies manufacture NVIDIA's semiconductor wafers?",
+    "ticker": "NVDA",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "TSMC"
+      ]
+    ]
+  },
+  {
+    "id": "nvda-2024-gross-margin",
+    "question": "What drove the change in NVIDIA's gross margin this year?",
+    "ticker": "NVDA",
+    "fiscal_year": 2024,
+    "expect_any": [
+      [
+        "Gross margin increased"
+      ]
+    ]
+  },
+  {
+    "id": "nvda-2022-international-revenue",
+    "question": "How much of NVIDIA's revenue comes from customers outside the US?",
+    "ticker": "NVDA",
+    "fiscal_year": 2022,
+    "expect_any": [
+      [
+        "outside of the United States",
+        "revenue"
+      ]
+    ]
+  },
+  {
+    "id": "msft-2024-azure-growth",
+    "question": "How fast did Azure grow?",
+    "ticker": "MSFT",
+    "fiscal_year": 2024,
+    "expect_any": [
+      [
+        "Azure and other cloud services revenue"
+      ]
+    ]
+  },
+  {
+    "id": "msft-2023-ai-risk",
+    "question": "What risks does Microsoft see from building and deploying artificial intelligence?",
+    "ticker": "MSFT",
+    "fiscal_year": 2023,
+    "expect_any": [
+      [
+        "development and use of AI"
+      ]
+    ]
+  },
+  {
+    "id": "msft-2025-purchase-commitments",
+    "question": "What long-term purchase commitments and contractual obligations does Microsoft have?",
+    "ticker": "MSFT",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "purchase commitments",
+        "Contractual Obligations"
+      ]
+    ]
+  },
+  {
+    "id": "googl-2025-youtube-ads",
+    "question": "Why did YouTube advertising revenue change?",
+    "ticker": "GOOGL",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "YouTube ads revenues increased"
+      ]
+    ]
+  },
+  {
+    "id": "googl-2022-cloud-profitability",
+    "question": "Was Google Cloud profitable?",
+    "ticker": "GOOGL",
+    "fiscal_year": 2022,
+    "expect_any": [
+      [
+        "segment operating income (loss)"
+      ]
+    ]
+  },
+  {
+    "id": "googl-2024-capex",
+    "question": "How much is Alphabet investing in servers, data centers and other technical infrastructure?",
+    "ticker": "GOOGL",
+    "fiscal_year": 2024,
+    "expect_any": [
+      [
+        "Capital Expenditures and Leases"
+      ]
+    ]
+  },
+  {
+    "id": "googl-2025-revenue-by-type",
+    "question": "Break down Alphabet's revenues by Google Search, YouTube ads, Google Network, subscriptions and Google Cloud.",
+    "ticker": "GOOGL",
+    "fiscal_year": 2025,
+    "expect_any": [
+      [
+        "revenues by type"
+      ],
+      [
+        "Revenues disaggregated by type"
+      ]
+    ]
+  }
+]
