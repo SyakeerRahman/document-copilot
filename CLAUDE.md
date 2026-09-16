@@ -14,7 +14,7 @@ The build rules for this repo live in the `AGENTS.md` tree, not here. This file 
 
 ## Current state
 
-Architecture steps 1-11 are done. A signed-in user asks a question; the PydanticAI agent (`backend/app/assistant/`) searches the 25 ingested filings, streams an answer with `[P3]`-style citations, sends the resolved sources as a `data-citations` part, and saves the turn with `message_citations` rows. The frontend shows a minimal "Sources" list (`frontend/src/components/chat/SourceList.tsx`). Grounding enforcement (step 12) and the full citation UI with Markdown rendering (step 13) do not exist yet: unknown citation handles are detected but not yet rejected.
+Architecture steps 1-12 are done. A signed-in user asks a question; the PydanticAI agent (`backend/app/assistant/`) searches the 25 ingested filings and drafts an answer with `[P3]`-style citations. Every draft passes through the grounding check (`backend/app/grounding/validator.py`) before the user sees any text; failed drafts go back to the model up to 2 times, and a turn that never passes shows an unverified notice instead. While the agent works, the browser shows transient status lines. Verified answers carry a `data-citations` part and `message_citations` rows. The frontend shows a minimal "Sources" list (`frontend/src/components/chat/SourceList.tsx`); the full citation UI with Markdown rendering (step 13) does not exist yet.
 
 Chat and embeddings go through **OpenRouter** in every environment (`OPENROUTER_API_KEY` in `backend/.env`). Supabase runs locally in Docker. No hosted Supabase project exists yet. Rationale: `brain/decisions/2026-09-16-models-go-through-openrouter.md` in the workspace root, which supersedes the two earlier Ollama decisions.
 
@@ -44,7 +44,7 @@ uv run python -m ingest                    # embed + store; skips filings alread
 uv run python -m ingest --ticker AAPL --replace   # re-ingest one company
 uv run python -m evals.retrieval --misses  # retrieval eval: all scopes x semantic/keyword/hybrid
 uv run python -m evals.retrieval --modes keyword  # no embedding calls
-uv run python -m evals.answers --show-answers    # answer eval: real agent on 23 questions (~2 min, ~$0.02)
+uv run python -m evals.answers --show-answers    # answer eval: real agent + grounding on 23 questions (~2 min, ~$0.02)
 ```
 
 Frontend (from `frontend/`):
@@ -69,13 +69,13 @@ First-time init commands for each service are in [docs/guides/backend-setup.md](
 
 Two paths through the system:
 
-1. **Chat path.** Browser signs in with Supabase Auth (email only), sends `Authorization: Bearer <supabase JWT>` to FastAPI. FastAPI verifies the token, runs hybrid retrieval, calls a PydanticAI agent, streams AI SDK-compatible message parts back, then persists the turn.
+1. **Chat path.** Browser signs in with Supabase Auth (email only), sends `Authorization: Bearer <supabase JWT>` to FastAPI. FastAPI verifies the token and runs a PydanticAI agent that searches with hybrid retrieval. It streams status parts while the agent works, checks the draft answer's grounding, sends the verified answer and its citations as AI SDK parts, then persists the turn.
 2. **Ingestion path.** `data/download.py` pulls SEC 10-Ks locally. `backend/ingest/` parses each HTML filing into pages (`filing_html.py`), builds Markdown and chunks (`chunking.py`), embeds through OpenRouter (`app/embeddings.py`), and writes `source_documents` + `document_chunks` in one transaction per filing (`pipeline.py`).
 
 Rules that shape most decisions:
 
 - **The backend is authoritative.** Retrieval, prompts, LLM calls, citation validation, and privileged writes all live in FastAPI. The browser never calls a model API, never holds the service-role key, never runs retrieval.
-- **Hybrid retrieval is two bounded queries plus Python fusion.** `app/retrieval/queries.py` runs a `pgvector` query and a Postgres full-text query separately; `fusion.py` merges them with Reciprocal Rank Fusion; `retriever.py:search_filings` is the single entry point (modes `hybrid`, `semantic`, `keyword`, used by the eval). The agent gets bounded tools (`search_filings`, `read_chunk`, `read_surrounding_chunks`), never generated SQL.
+- **Hybrid retrieval is two bounded queries plus Python fusion.** `app/retrieval/queries.py` runs a `pgvector` query and a Postgres full-text query separately; `fusion.py` merges them with Reciprocal Rank Fusion; `retriever.py:search_filings` is the single entry point (modes `hybrid`, `semantic`, `keyword`, used by the eval). The agent gets bounded tools (`search_filings`, `read_surrounding_chunks`), never generated SQL.
 - **Grounding is an architectural invariant, not a prompt preference.** Every citation must map to a passage retrieved for *this* request. If validation fails, return a controlled failure instead of a polished unsupported answer. This is the product; treat it as such in tests.
 - **Retrieval and grounding stay independent of PydanticAI** so they are testable without invoking an LLM.
 - **Alembic is the source of truth for schema**, not the Supabase dashboard. Migrations need the direct/session `DATABASE_URL` (`db.<ref>.supabase.co`), never the transaction pooler URL. pgvector extension, generated `tsvector` columns, HNSW/GIN indexes, and RLS policies are written explicitly in migrations - autogenerate cannot infer them.
@@ -111,13 +111,23 @@ Rules that shape most decisions:
 ### Agent and citations
 
 - **Citations are handles, resolved by code.** Every passage a tool shows the model gets a handle (`[P1]`, `[P2]`) from a per-turn `PassageRegistry` (`app/assistant/citations.py`). The model cites handles; `extract_citations` maps them back to chunks and lists any handle no tool returned in `unknown_handles`. A chunk returned by two searches keeps its first handle.
-- Tools (`app/assistant/agent.py`): `search_filings(query, tickers, fiscal_years)` returns 6 passages with full content (never truncated, because the model must see what it cites) and `read_surrounding_chunks(handle, before, after)` (clamped to 2). There is no `read_chunk` tool: search results already carry the full chunk. `USAGE_LIMITS` caps a turn at 8 model requests and 12 tool calls.
+- Tools (`app/assistant/agent.py`): `search_filings(query, tickers, fiscal_years)` returns 8 passages (`retriever.DEFAULT_LIMIT`, the value the evals measured) with full content (never truncated, because the model must see what it cites) and `read_surrounding_chunks(handle, before, after)` (clamped to 2). There is no `read_chunk` tool: search results already carry the full chunk. `USAGE_LIMITS` caps a turn at 10 model requests (grounding retries included) and 12 tool calls.
 - The product contract lives in `app/assistant/instructions.md`; the corpus list (tickers and fiscal years) is appended per run from the database, so the model never guesses what exists. `tests/assistant/test_agent.py` asserts key rules are present.
 - `AgentDeps` holds `search` and `chunks_in_range` callables, not sessions. Unit tests pass fakes with PydanticAI `FunctionModel`; `app/assistant/runtime.py:database_deps` builds the real ones (API, eval, integration tests). Each tool call opens its own session because DeepSeek calls tools in parallel.
 - **History:** `app/chat/messages.py:to_model_history` sends the last 10 messages as plain text with citation markers stripped. Old handles belonged to an earlier turn's registry and would otherwise resolve to different passages now.
-- **Streaming:** `app/assistant/answer.py` holds back the first 300 characters of each model response, so text a model writes before a tool call ("Let me search...") is dropped instead of streamed. PydanticAI's `FinalResultEvent` cannot decide this: it fires when text starts even if a tool call follows. The saved answer and its citations always come from the run's final output.
-- Persisted assistant parts are `[text, data-citations]`; `usage` (tokens, requests, tool calls, model) goes into `chat_messages.usage`.
-- `evals/answers.py` reuses `retrieval_questions.json` (each question asked with company and fiscal year) and checks cited / valid / expected, plus 3 decline questions printed for a person to read (investment advice, a company not in the corpus, "prove AI improved margins").
+- **No answer text streams.** `app/assistant/answer.py:run_answer` yields `AnswerStatus` lines (sent as transient `data-status` parts, shown by `ChatPanel` via `onData`, never saved) and one `AnswerDone`. The orchestrator sends the text in one delta only after the draft passed grounding. Streaming was dropped on evidence: search dominates latency (first words at 14 s, finish at 17 s), and the brief ranks a wrong answer below no answer.
+- Persisted assistant parts are `[text, data-citations]` for a verified answer and `[notice text, data-unverified]` for a failed one; `usage` (tokens, requests, tool calls, model, grounding outcome with every rejected draft's violations) goes into `chat_messages.usage`. `to_model_history` skips unverified turns.
+- `evals/answers.py` reuses `retrieval_questions.json` (each question asked with company and fiscal year) and checks grounded / drafts rejected / cited / valid / expected, plus 3 decline questions printed for a person to read (investment advice, a company not in the corpus, "prove AI improved margins").
+
+### Grounding
+
+- `app/grounding/validator.py:check_grounding` is pure Python, no model. An answer passes when (1) every handle was returned by a tool this turn, (2) it cites at least one passage or contains an exact decline sentence (`NO_EVIDENCE_SENTENCE`, `NO_ADVICE_SENTENCE`), and (3) every figure appears in a cited passage or sits in a claim labelled "my calculation".
+- It runs as a PydanticAI `@agent.output_validator` with `retries={"output": 2}` (not `output_retries`, which this PydanticAI version rejects). A failure raises `ModelRetry(report.feedback())`, and every rejected draft is recorded in `AgentDeps.grounding_failures`. When retries run out, PydanticAI raises `UnexpectedModelBehavior`; `run_answer` turns that into the unverified notice only if `grounding_failures` is non-empty, so a model or provider error is never disguised as a grounding failure.
+- The decline sentences are defined once in the validator and substituted into `instructions.md` (`{{NO_EVIDENCE_SENTENCE}}`), so the model is told exactly what the check accepts.
+- Figure matching allows half-up rounding at the stated precision ("$4.8 billion" matches 4,750 million; "$4.7 billion" does not), filing units (a bare table number may be in thousands, millions, or billions), and a percentage matching a bare number (tables captioned "as a percentage of revenue" omit the % sign). Years 1990-2100, counts of 10 or less, and numbers after "Item", "Note", "page", "fiscal", "FY", "Q", "Form" are not figures.
+- A "my calculation" label covers its sentence; for a Markdown table it covers the whole table when it appears in the line just before the table or in the header row.
+- Measured on real DeepSeek answers: before the instructions mentioned the check, 19 of 23 passed as written, and 2 failures were real (declines without the exact sentence) and 2 were false rejections, now fixed (a calculation labelled in the table caption, a percentage table without % signs). With the instructions, 23 of 23 passed with 0 rejected drafts. Mutation test (one real figure changed by 7% at a time): 129 of 143 caught; every miss was a small percentage that also appears elsewhere in the cited passages.
+- Known limit: a figure must exist in the cited passages, not next to the right claim. Per-claim matching would reject valid tables, whose rows usually carry no handle. The Sources list is how a person verifies that last step.
 
 ### Retrieval and eval
 
@@ -146,6 +156,7 @@ Rules that shape most decisions:
 - `alembic/versions/` is excluded from ruff so migrations keep Alembic's generated style. The `embedding_dimensions_1024_for_ollama` migration name is historical; the 1024 column now serves bge-m3.
 - `supabase/config.toml` disables Supabase's own migrations and seeding. Never add files under `supabase/migrations/`; schema changes go through Alembic only.
 - **On Windows the API must run with `--reload`.** Plain `uvicorn` uses the ProactorEventLoop, which psycopg async rejects; `--reload` uses the selector loop. `app/main.py` fails at startup with that message. CLIs (`ingest`, `evals`) pass `loop_factory=asyncio.SelectorEventLoop`, and tests get it from the `anyio_backend` fixture. Production (Linux) is unaffected.
+- **On Windows, `uvicorn --reload` did not reload on edits in this session, and a killed server left an orphaned `multiprocessing.spawn` worker still bound to port 8000.** Windows lets two processes bind the same port, so requests kept reaching the old code while the new server logged nothing. If behavior does not match the code, check `Get-NetTCPConnection -LocalPort 8000 -State Listen` for more than one owner and stop the older python process.
 - Docker Desktop fails to start its VM ("Not enough memory resources", `0x8007000e`) when RAM is exhausted. Check for runaway processes before blaming Docker: on 2026-09-16 a Next.js dev server in another project had spawned 1,496 node workers holding 43 GB of commit.
 - The backend reads and writes Postgres through SQLAlchemy async (`app/database/`), as the `postgres` role, so RLS does not apply to it. Ownership is enforced in code: `get_owned_thread` in `app/api/threads.py` returns 404 or 403. The RLS policies protect direct browser access through Supabase's REST API.
 - Chat wire types come from `pydantic_ai.ui.vercel_ai` (request and response models for the AI SDK stream protocol). The frontend is AI SDK v7; `app/chat/streaming.py` pins `SDK_VERSION = 7`.

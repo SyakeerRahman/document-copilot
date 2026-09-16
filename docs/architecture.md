@@ -339,6 +339,10 @@ The backend should enforce these invariants:
 
 This policy should be covered by backend unit tests around retrieval, citation extraction, and grounding enforcement.
 
+**As built (step 12):** `backend/app/grounding/validator.py` enforces the invariants in code, with one addition: every number in an answer must appear in a cited passage, allowing for rounding and filing units, or its sentence must say "my calculation". "Explicitly says there is not enough evidence" is an exact decline sentence that the validator defines and the instructions quote, not a phrase match. The check runs as a PydanticAI output validator. A rejected draft goes back to the model with its violations, at most 2 times. The controlled failure is a saved assistant message with a fixed notice and a `data-unverified` part, and later turns leave it out of the model history.
+
+This changes the streaming contract below: answer text is not streamed. The backend sends transient `data-status` parts while the agent works, then the verified text in one part. Search takes most of the response time, so streaming the text saved about 3 seconds, and it would have shown drafts that later fail the check.
+
 ## Error Handling
 
 Expected error classes:

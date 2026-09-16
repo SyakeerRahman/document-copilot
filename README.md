@@ -19,10 +19,10 @@ The build follows the 13-step sequence at the end of [docs/architecture.md](docs
 | 8 | Ingestion: parse, chunk, embed, and store the SEC filings | Done |
 | 9-10 | Hybrid search (vector and keyword) with a retrieval eval | Done |
 | 11 | Agent that answers from retrieved passages, with citations | Done |
-| 12 | Citation validation and grounding checks | Not started |
+| 12 | Citation validation and grounding checks | Done |
 | 13 | UI for citations, source passages, empty states, and errors | Not started |
 
-**What works today:** you can sign in, ask a question about the 25 filings, and get a streamed answer with citations. Each citation opens the source passage. The answer and its sources stay after a reload. The system detects a citation that points to no retrieved passage, but it does not reject the answer yet (step 12). The chat shows Markdown tables as plain text until step 13.
+**What works today:** you can sign in, ask a question about the 25 filings, and get an answer with citations. While the agent works, the chat shows what it searches. The system checks every answer against its sources before you see it. If an answer fails the check, the chat shows a clear notice instead of the answer. Each citation opens the source passage, and the chat keeps everything after a reload. The chat shows Markdown tables as plain text until step 13.
 
 ## How it works
 
@@ -347,12 +347,14 @@ Hybrid misses with ticker+year filters:
 
 ### Step 8. Measure answer quality
 
-**What this step does:** It runs the real agent on the 20 eval questions and on 3 questions that it must decline. For each answer, it checks the citations.
+**What this step does:** It runs the real agent and the grounding check on 20 eval questions. It also asks 3 questions that the agent must decline. For each answer, it reports the check result and the citations.
 
 **Why:** Good search does not guarantee a good answer. The model can ignore a passage, cite the wrong passage, or invent a citation. This eval shows whether the chat model follows the citation rules before analysts rely on it. Use it again before you change `CHAT_MODEL`.
 
-The eval asks each question with the company and the fiscal year, as an analyst would. It checks 3 things for each answer:
+The eval asks each question with the company and the fiscal year, as an analyst would. It reports these things for each answer:
 
+- **grounded:** the answer passed the grounding check that step 11 describes.
+- **drafts:** the number of drafts that the check rejected before the answer passed.
 - **cited:** the answer has at least one citation.
 - **valid:** every citation points to a passage that a tool showed the model in this turn.
 - **expected:** at least one cited passage is a correct answer passage from the answer key.
@@ -369,15 +371,17 @@ The run takes about 2 minutes and costs about $0.02.
 ```text
 model deepseek/deepseek-v4-flash-0731, 20 answerable questions, 3 decline questions
 
-question                               cited valid expected cites  secs  tokens in/out
-aapl-2025-category-mix                   yes   yes      yes     2  20.7       9045/848
-amzn-2025-segment-operating-income       yes   yes      yes     3  10.2       5823/364
-nvda-2024-china-export-rules             yes   yes      yes     8  28.7       8315/929
+question                               grounded drafts cited valid expected cites  secs  tokens in/out
+aapl-2025-category-mix                      yes      0   yes   yes      yes     2  33.8       9520/749
+amzn-2025-segment-operating-income          yes      0   yes   yes      yes     3  30.5       9235/611
+nvda-2024-china-export-rules                yes      0   yes   yes      yes     6  21.5       8591/706
 ...
-googl-2025-revenue-by-type               yes   yes      yes     6   8.0      14014/876
+googl-2025-revenue-by-type                  yes      0   yes   yes      yes     5  28.9      14316/650
 
-cited 1.00   valid 1.00   expected 1.00   median 20.2s   max 51.1s   tokens 193038 in / 14170 out   errors 0
+grounded 1.00   cited 1.00   valid 1.00   expected 1.00   answers revised 0   median 24.2s   max 70.6s   tokens 201525 in / 13322 out   errors 0
 ```
+
+If the check rejects a draft, the eval also prints each rejected draft and the problems that the check sent back to the model.
 
 The eval then prints the answers to the 3 decline questions for a person to read:
 
@@ -451,12 +455,21 @@ pnpm dev
 
 **Example result:**
 
-- After about 15 seconds, the answer appears word by word while the **Stop** button shows. The agent first searches the filings, so the first words take longer than the rest.
+- A status line shows what the agent does, for example `Searching AMZN fiscal 2025: AWS operating income segment`. No answer text shows yet.
+- After about 20 to 30 seconds, the whole answer appears at once. The system shows it only after it passes the grounding check.
 - The answer starts like this: `AWS was the most profitable of Amazon's three segments in fiscal 2025, with operating income of $45,606 million, versus $29,619 million for North America and $4,750 million for International [P4][P7].`
 - A **Sources** list follows the answer. Each source names the filing, the page, and the section, for example `[P7] AMAZON.COM, INC. 10-K, fiscal 2025, page 68, Item 8. Financial Statements and Supplementary Data > Note 10`.
 - Select a source to see the passage text and a link to the filing on SEC.gov.
 - When you reload the page, the question, the answer, and the sources are still there.
 - The chat list shows the chat, with the first question as its title.
+
+**How the grounding check works:** code, not a model, checks every draft answer against the passages that the agent retrieved. A draft passes when all 3 rules are true:
+
+1. Every citation handle points to a passage that a tool returned in this turn.
+2. The answer cites at least one passage, or it contains an exact decline sentence, for example "The filings in the corpus do not contain enough evidence to answer this."
+3. Every number in the answer appears in a cited passage, or its sentence says "my calculation".
+
+If a draft fails, the model gets the list of problems and writes the answer again, up to 2 times. If no draft passes, the chat shows a box labelled **Not verified** with this text: `I could not verify an answer against the filings, so I am not showing one. Try a narrower question, for example about one company and one fiscal year.`
 
 A follow-up question can depend on the chat. For example, after the question above, "And in fiscal 2024?" gets the same comparison for 2024.
 
@@ -538,7 +551,9 @@ Each decision below has a reason. A change to one of them needs a new reason.
 | Each API route checks that the user owns the chat. | The backend connects as the database owner, so row-level security does not protect it. |
 | The model cites a short handle, for example `[P3]`, and code maps the handle to the stored passage. | The model cannot cite a passage that it did not see. An invented handle maps to no passage, so the system can detect it. |
 | Earlier answers go back to the model without their citation handles. | Each turn numbers its handles again. An old `[P3]` would otherwise point to a different passage in the new turn. |
-| The backend holds back the first 300 characters of each model response before it streams them. | Some models write a short note, for example "Let me search", before they call a tool. That note must not become part of the answer. |
+| The chat shows no answer text until the answer passes the grounding check. A status line shows progress instead. | The client brief says a wrong but confident answer is worse than no answer. The search takes most of the wait, so streaming the text saved only about 3 seconds. |
+| Code, not a model, checks the citations and the numbers in each answer. | A check that a model runs can make the same mistake as the answer. A code check gives the same result every time and has tests. |
+| The model gets up to 2 chances to fix a rejected answer. | Most rejected drafts have a small fault, for example a calculation without a label. One more attempt is cheaper than a failed question. |
 | The chat model is pinned to a dated version and checked with the answer eval. | An alias such as `~latest` can change the model without a warning, and an unchecked model can cite passages incorrectly. |
 
 The full reasoning is in [docs/architecture.md](docs/architecture.md) and [CLAUDE.md](CLAUDE.md).
@@ -549,6 +564,8 @@ The full reasoning is in [docs/architecture.md](docs/architecture.md) and [CLAUD
 | ------- | ----- | --- |
 | Docker Desktop shows `Not enough memory resources are available to complete this operation` | The computer has too little free RAM for the Docker VM. | Close memory-heavy programs. Check for runaway processes, for example many `node` processes from another dev server. Then restart Docker Desktop. |
 | The API stops at startup with `On Windows, start the API with uv run uvicorn app.main:app --reload` | uvicorn started without `--reload` on Windows. | Start it with `--reload`. |
+| The chat behaves like older code after a backend change, and the new server logs no requests | An old uvicorn worker process still listens on port 8000. Windows lets two processes use the same port. | Run `Get-NetTCPConnection -LocalPort 8000 -State Listen` in PowerShell. Stop the older python process, then start the API again. |
+| An answer shows **Not verified** | The model could not write an answer that passes the grounding check in 3 attempts. | Ask a narrower question with one company and one fiscal year. The rejected drafts and their problems are in `chat_messages.usage` for that message. |
 | Any backend command stops with `openrouter_api_key String should have at least 1 character` | `OPENROUTER_API_KEY` in `backend/.env` is empty. | Add your key. |
 | The eval prints `Stored vectors come from [...], but EMBEDDING_MODEL is ...` | The database holds vectors from a different embedding model. | Run `uv run python -m ingest`. It embeds the stale filings again. |
 | The eval prints `Answer key does not match the database` | A change to chunking changed the stored chunk text. | Update the expected text in `backend/evals/retrieval_questions.json` from the real chunk text. |
