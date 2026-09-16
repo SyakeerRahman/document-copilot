@@ -18,11 +18,11 @@ The build follows the 13-step sequence at the end of [docs/architecture.md](docs
 | 4-7 | Sign-in, protected API, chat UI, streamed replies saved to the database | Done |
 | 8 | Ingestion: parse, chunk, embed, and store the SEC filings | Done |
 | 9-10 | Hybrid search (vector and keyword) with a retrieval eval | Done |
-| 11 | Agent that answers from retrieved passages | Not started |
+| 11 | Agent that answers from retrieved passages, with citations | Done |
 | 12 | Citation validation and grounding checks | Not started |
 | 13 | UI for citations, source passages, empty states, and errors | Not started |
 
-**What works today:** you can sign in, start a chat, and send a message. The reply is a placeholder, because the agent (step 11) does not exist yet. Search over the 25 filings works and has measured results, but no chat request uses it yet.
+**What works today:** you can sign in, ask a question about the 25 filings, and get a streamed answer with citations. Each citation opens the source passage. The answer and its sources stay after a reload. The system detects a citation that points to no retrieved passage, but it does not reject the answer yet (step 12). The chat shows Markdown tables as plain text until step 13.
 
 ## How it works
 
@@ -72,7 +72,7 @@ document-copilot/
 ├── backend/
 │   ├── app/               # FastAPI app: API, auth, chat, retrieval, database
 │   ├── ingest/            # Filing parser, chunker, ingestion command
-│   ├── evals/             # Retrieval eval and its questions
+│   ├── evals/             # Retrieval and answer evals, and their questions
 │   ├── alembic/           # Database migrations
 │   └── tests/             # Unit and integration tests
 └── frontend/
@@ -153,7 +153,7 @@ ANON_KEY="<anon key>"
 SERVICE_ROLE_KEY="<service role key>"
 ```
 
-Keep this output open. Step 3 and step 9 use these values.
+Keep this output open. Step 3 and step 10 use these values.
 
 ### Step 3. Configure the backend
 
@@ -342,10 +342,52 @@ Hybrid misses with ticker+year filters:
 **What the results show:**
 
 - With the correct company and year, hybrid search puts a correct passage in the top 10 for all 20 questions.
-- Without a year filter, results drop sharply. Each company's 5 filings contain very similar passages. The agent in step 11 must therefore pass the fiscal year whenever a question implies one.
+- Without a year filter, results drop sharply. Each company's 5 filings contain very similar passages. The agent therefore passes the fiscal year to the search whenever a question implies one.
 - One question is worth 0.05 in this table. Treat a difference of 0.05 as noise.
 
-### Step 8. Start the backend API
+### Step 8. Measure answer quality
+
+**What this step does:** It runs the real agent on the 20 eval questions and on 3 questions that it must decline. For each answer, it checks the citations.
+
+**Why:** Good search does not guarantee a good answer. The model can ignore a passage, cite the wrong passage, or invent a citation. This eval shows whether the chat model follows the citation rules before analysts rely on it. Use it again before you change `CHAT_MODEL`.
+
+The eval asks each question with the company and the fiscal year, as an analyst would. It checks 3 things for each answer:
+
+- **cited:** the answer has at least one citation.
+- **valid:** every citation points to a passage that a tool showed the model in this turn.
+- **expected:** at least one cited passage is a correct answer passage from the answer key.
+
+```bash
+cd backend
+uv run python -m evals.answers
+```
+
+The run takes about 2 minutes and costs about $0.02.
+
+**Example output** (the middle rows are removed here):
+
+```text
+model deepseek/deepseek-v4-flash-0731, 20 answerable questions, 3 decline questions
+
+question                               cited valid expected cites  secs  tokens in/out
+aapl-2025-category-mix                   yes   yes      yes     2  20.7       9045/848
+amzn-2025-segment-operating-income       yes   yes      yes     3  10.2       5823/364
+nvda-2024-china-export-rules             yes   yes      yes     8  28.7       8315/929
+...
+googl-2025-revenue-by-type               yes   yes      yes     6   8.0      14014/876
+
+cited 1.00   valid 1.00   expected 1.00   median 20.2s   max 51.1s   tokens 193038 in / 14170 out   errors 0
+```
+
+The eval then prints the answers to the 3 decline questions for a person to read:
+
+- "Should I buy NVIDIA stock based on its fiscal 2025 results?" The model must refuse to give investment advice.
+- "What was Tesla's total revenue in fiscal 2024?" The model must say that Tesla is not in the corpus, with no citations.
+- "Do Microsoft's 10-K filings prove that generative AI improved its operating margins?" The model must not state a conclusion that the filings do not state.
+
+Add `--show-answers` to print every answer with its citations. Add `--model <OpenRouter model id>` to test a different chat model.
+
+### Step 9. Start the backend API
 
 **What this step does:** It starts the FastAPI server on port 8000.
 
@@ -369,7 +411,7 @@ curl http://127.0.0.1:8000/health
 {"status":"ok"}
 ```
 
-### Step 9. Configure and start the frontend
+### Step 10. Configure and start the frontend
 
 **What this step does:** It creates `frontend/.env`, installs the frontend packages, and starts the Vite dev server.
 
@@ -395,7 +437,7 @@ pnpm dev
   ➜  Local:   http://localhost:5173/
 ```
 
-### Step 10. Sign in and send a message
+### Step 11. Sign in and ask a question
 
 **What this step does:** It tests the full chat path in the browser.
 
@@ -405,18 +447,22 @@ pnpm dev
 2. Select **No account yet? Create one**.
 3. Enter any email address and a password of at least 6 characters.
 4. Select **Start a chat**.
-5. Type a question, for example "How did AWS operating margin change from 2021 to 2025?", and press Enter.
+5. Type a question, for example "How did AWS operating income compare with North America and International in fiscal 2025?", and press Enter.
 
 **Example result:**
 
-- The reply appears word by word while the **Stop** button shows.
-- The reply is a placeholder until step 11: `This is a placeholder reply. The assistant is not connected to the filings yet, so it cannot answer: "How did AWS operating margin change from 2021 to 2025?"`
-- When you reload the page, the question and the reply are still there.
+- After about 15 seconds, the answer appears word by word while the **Stop** button shows. The agent first searches the filings, so the first words take longer than the rest.
+- The answer starts like this: `AWS was the most profitable of Amazon's three segments in fiscal 2025, with operating income of $45,606 million, versus $29,619 million for North America and $4,750 million for International [P4][P7].`
+- A **Sources** list follows the answer. Each source names the filing, the page, and the section, for example `[P7] AMAZON.COM, INC. 10-K, fiscal 2025, page 68, Item 8. Financial Statements and Supplementary Data > Note 10`.
+- Select a source to see the passage text and a link to the filing on SEC.gov.
+- When you reload the page, the question, the answer, and the sources are still there.
 - The chat list shows the chat, with the first question as its title.
+
+A follow-up question can depend on the chat. For example, after the question above, "And in fiscal 2024?" gets the same comparison for 2024.
 
 Local Supabase does not send confirmation emails for sign-up. Mailpit at http://127.0.0.1:54324 shows any emails that Supabase sends.
 
-### Step 11. Run the tests
+### Step 12. Run the tests
 
 **What this step does:** It runs the backend test suites and the frontend checks.
 
@@ -433,12 +479,12 @@ uv run ruff check . && uv run ruff format --check .
 **Example output:**
 
 ```text
-55 passed, 11 deselected, 1 warning in 3.41s
-11 passed, 55 deselected, 1 warning in 14.65s
+72 passed, 12 deselected, 1 warning in 4.22s
+12 passed, 72 deselected, 1 warning in 102.55s (0:01:42)
 All checks passed!
 ```
 
-The integration suite needs local Supabase, the ingested corpus, and a real `OPENROUTER_API_KEY`. It costs less than one cent.
+The integration suite needs local Supabase, the ingested corpus, and a real `OPENROUTER_API_KEY`. It runs the real agent, takes about 2 minutes, and costs less than one cent.
 
 Frontend, from `frontend/`:
 
@@ -448,7 +494,7 @@ pnpm lint
 pnpm build
 ```
 
-The frontend has no automated tests by design. Step 10 is the frontend check.
+The frontend has no automated tests by design. Step 11 is the frontend check.
 
 ## Configuration reference
 
@@ -490,6 +536,10 @@ Each decision below has a reason. A change to one of them needs a new reason.
 | The embedding client refuses input that is too long. | Some embedding APIs cut long input without an error. The end of that passage then becomes impossible to find. |
 | Ingestion records the embedding model and embeds again after a model change. | A comparison between vectors from two different models gives wrong results without an error. |
 | Each API route checks that the user owns the chat. | The backend connects as the database owner, so row-level security does not protect it. |
+| The model cites a short handle, for example `[P3]`, and code maps the handle to the stored passage. | The model cannot cite a passage that it did not see. An invented handle maps to no passage, so the system can detect it. |
+| Earlier answers go back to the model without their citation handles. | Each turn numbers its handles again. An old `[P3]` would otherwise point to a different passage in the new turn. |
+| The backend holds back the first 300 characters of each model response before it streams them. | Some models write a short note, for example "Let me search", before they call a tool. That note must not become part of the answer. |
+| The chat model is pinned to a dated version and checked with the answer eval. | An alias such as `~latest` can change the model without a warning, and an unchecked model can cite passages incorrectly. |
 
 The full reasoning is in [docs/architecture.md](docs/architecture.md) and [CLAUDE.md](CLAUDE.md).
 

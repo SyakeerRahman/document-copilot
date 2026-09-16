@@ -198,6 +198,8 @@ The agent's instructions should encode the product contract:
 
 Retrieval and grounding remain independent from PydanticAI. This keeps ingestion, retrieval tests, and citation validation testable without invoking the LLM.
 
+**As built (step 11):** the agent's output type is plain text, not a structured `GroundedAnswer`. Each passage that a tool shows the model gets a short handle, for example `[P3]`, from a per-turn registry. The model cites handles inline. After the run, code resolves each handle to its stored chunk and records any handle that no tool returned. This keeps the answer streamable as text, works with any OpenRouter model, and makes an invented citation detectable: it maps to no passage. `AgentDeps` holds `search` and `chunks_in_range` callables instead of a retriever object, so unit tests replace them with fakes. The tools are `search_filings` and `read_surrounding_chunks`; a separate `read_chunk` is unnecessary because search results carry the full chunk.
+
 ## Retrieval Strategy
 
 Document Copilot uses hybrid retrieval:

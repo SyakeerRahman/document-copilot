@@ -14,7 +14,7 @@ The build rules for this repo live in the `AGENTS.md` tree, not here. This file 
 
 ## Current state
 
-Architecture steps 1-10 are done. A user can sign up, start a chat, and get a streamed reply that is saved and reloads with the page. The reply is still a placeholder from `backend/app/assistant/stub.py`. The 25-filing corpus is ingested into `source_documents` and `document_chunks`. Hybrid search (`backend/app/retrieval/`) is built and measured with `backend/evals/retrieval.py`. Nothing calls it yet: the agent and grounding (steps 11-13) do not exist.
+Architecture steps 1-11 are done. A signed-in user asks a question; the PydanticAI agent (`backend/app/assistant/`) searches the 25 ingested filings, streams an answer with `[P3]`-style citations, sends the resolved sources as a `data-citations` part, and saves the turn with `message_citations` rows. The frontend shows a minimal "Sources" list (`frontend/src/components/chat/SourceList.tsx`). Grounding enforcement (step 12) and the full citation UI with Markdown rendering (step 13) do not exist yet: unknown citation handles are detected but not yet rejected.
 
 Chat and embeddings go through **OpenRouter** in every environment (`OPENROUTER_API_KEY` in `backend/.env`). Supabase runs locally in Docker. No hosted Supabase project exists yet. Rationale: `brain/decisions/2026-09-16-models-go-through-openrouter.md` in the workspace root, which supersedes the two earlier Ollama decisions.
 
@@ -44,6 +44,7 @@ uv run python -m ingest                    # embed + store; skips filings alread
 uv run python -m ingest --ticker AAPL --replace   # re-ingest one company
 uv run python -m evals.retrieval --misses  # retrieval eval: all scopes x semantic/keyword/hybrid
 uv run python -m evals.retrieval --modes keyword  # no embedding calls
+uv run python -m evals.answers --show-answers    # answer eval: real agent on 23 questions (~2 min, ~$0.02)
 ```
 
 Frontend (from `frontend/`):
@@ -93,7 +94,7 @@ Rules that shape most decisions:
 ### Models (OpenRouter)
 
 - `OPENROUTER_API_KEY`, `CHAT_MODEL`, and `EMBEDDING_MODEL` are required and must be non-empty: a blank `OPENROUTER_API_KEY=` fails at startup. Anything importing `app.*` (Alembic, ingest, evals) needs them. For keyword-only runs without a key, export a placeholder `OPENROUTER_API_KEY`.
-- `CHAT_MODEL=deepseek/deepseek-v4-flash-0731` is a working choice, not a decision; step 11 picks the model with an answer-quality eval. Pin dated model ids, never `~...-latest` aliases, which change underneath you.
+- `CHAT_MODEL=deepseek/deepseek-v4-flash-0731` passed the answer eval (20 of 20 cited, valid, and citing an answer-key passage; median 20s; about $0.02 per full run). Compare another model with `uv run python -m evals.answers --model <id>` before switching. Pin dated model ids, never `~...-latest` aliases, which change underneath you.
 - `EMBEDDING_MODEL=baai/bge-m3` (1024 dims, matches the column, no instruction prefix). `qwen/qwen3-embedding-0.6b` appears in OpenRouter docs but not in its live model list. Larger qwen3-embedding models return more than 2000 dimensions, which the pgvector HNSW index cannot hold.
 - Changing the embedding model means re-embedding everything. `ingest` stores `embedding_model` in document and chunk metadata and re-embeds any filing whose model differs. `evals.retrieval` refuses semantic/hybrid modes while stored vectors come from another model, because mixed-model similarity returns confident nonsense, not an error.
 - `app/embeddings.py` refuses over-long input client-side (`EMBEDDING_MAX_INPUT_TOKENS`, estimated at 2.8 chars/token) because the API does not promise to error instead of truncating. It retries 429/5xx, and treats `{"error": ...}` inside a 200 response as a failure.
@@ -106,6 +107,17 @@ Rules that shape most decisions:
 - Embedded text is `company, form, fiscal year, section > subsection` plus the chunk (`ingest/pipeline.py:embedding_input`); the stored `content` is the chunk alone.
 - Section detection: Amazon writes Item headings as single-row two-cell tables; Microsoft repeats "PART II / Item 7" at the top of every page; Alphabet repeats a one-row table "Table of Contents | Alphabet Inc.". All are handled in `filing_html.py:_strip_running_headers`. Every table of contents in the corpus is a multi-row table, so several Item headings on one page are real, not a TOC. NVIDIA's financial statements sit under Item 15, which is correct.
 - The Windows console mangles curly quotes when printing filing text (`�`). The files are valid UTF-8; set `PYTHONIOENCODING=utf-8` when printing chunks.
+
+### Agent and citations
+
+- **Citations are handles, resolved by code.** Every passage a tool shows the model gets a handle (`[P1]`, `[P2]`) from a per-turn `PassageRegistry` (`app/assistant/citations.py`). The model cites handles; `extract_citations` maps them back to chunks and lists any handle no tool returned in `unknown_handles`. A chunk returned by two searches keeps its first handle.
+- Tools (`app/assistant/agent.py`): `search_filings(query, tickers, fiscal_years)` returns 6 passages with full content (never truncated, because the model must see what it cites) and `read_surrounding_chunks(handle, before, after)` (clamped to 2). There is no `read_chunk` tool: search results already carry the full chunk. `USAGE_LIMITS` caps a turn at 8 model requests and 12 tool calls.
+- The product contract lives in `app/assistant/instructions.md`; the corpus list (tickers and fiscal years) is appended per run from the database, so the model never guesses what exists. `tests/assistant/test_agent.py` asserts key rules are present.
+- `AgentDeps` holds `search` and `chunks_in_range` callables, not sessions. Unit tests pass fakes with PydanticAI `FunctionModel`; `app/assistant/runtime.py:database_deps` builds the real ones (API, eval, integration tests). Each tool call opens its own session because DeepSeek calls tools in parallel.
+- **History:** `app/chat/messages.py:to_model_history` sends the last 10 messages as plain text with citation markers stripped. Old handles belonged to an earlier turn's registry and would otherwise resolve to different passages now.
+- **Streaming:** `app/assistant/answer.py` holds back the first 300 characters of each model response, so text a model writes before a tool call ("Let me search...") is dropped instead of streamed. PydanticAI's `FinalResultEvent` cannot decide this: it fires when text starts even if a tool call follows. The saved answer and its citations always come from the run's final output.
+- Persisted assistant parts are `[text, data-citations]`; `usage` (tokens, requests, tool calls, model) goes into `chat_messages.usage`.
+- `evals/answers.py` reuses `retrieval_questions.json` (each question asked with company and fiscal year) and checks cited / valid / expected, plus 3 decline questions printed for a person to read (investment advice, a company not in the corpus, "prove AI improved margins").
 
 ### Retrieval and eval
 
