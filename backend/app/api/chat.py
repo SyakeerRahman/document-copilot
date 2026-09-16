@@ -6,9 +6,10 @@ from pydantic_ai.ui.vercel_ai.request_types import UIMessage
 
 from app.api.models import ApiModel
 from app.api.threads import get_owned_thread
-from app.assistant.stub import stub_reply
+from app.assistant.answer import AnswerDone, stream_answer
+from app.assistant.runtime import database_deps
 from app.auth.dependencies import CurrentUserDep
-from app.chat.messages import InvalidUserMessage, extract_user_text, text_parts
+from app.chat.messages import InvalidUserMessage, assistant_parts, extract_user_text, text_parts, to_model_history
 from app.chat.orchestrator import run_turn
 from app.chat.streaming import STREAM_HEADERS, STREAM_MEDIA_TYPE
 from app.database import chats
@@ -34,10 +35,14 @@ async def stream_chat(
     except InvalidUserMessage as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
+    history = to_model_history(await chats.list_messages(session, body.thread_id))
     sessionmaker = request.app.state.sessionmaker
+    deps = await database_deps(sessionmaker, request.app.state.http)
 
-    async def persist(assistant_id: UUID, answer: str) -> None:
-        # A fresh session: the request-scoped one is not guaranteed to outlive the response body.
+    def generate(question: str):
+        return stream_answer(request.app.state.agent, question, history, deps)
+
+    async def persist(assistant_id: UUID, done: AnswerDone) -> None:
         async with sessionmaker() as turn_session:
             await chats.append_turn(
                 turn_session,
@@ -45,11 +50,13 @@ async def stream_chat(
                 user_parts=text_parts(question),
                 user_text=question,
                 assistant_id=assistant_id,
-                assistant_parts=text_parts(answer),
+                assistant_parts=assistant_parts(assistant_id, done.answer),
+                cited_chunk_ids=[citation.passage.chunk_id for citation in done.answer.citations],
+                usage=done.usage,
             )
 
     return StreamingResponse(
-        run_turn(question=question, generate=stub_reply, persist=persist),
+        run_turn(question=question, generate=generate, persist=persist),
         media_type=STREAM_MEDIA_TYPE,
         headers=STREAM_HEADERS,
     )

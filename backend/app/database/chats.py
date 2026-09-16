@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser
-from app.database.models import ChatMessage, ChatThread, Profile
+from app.database.models import ChatMessage, ChatThread, MessageCitation, Profile
 
 TITLE_MAX_CHARS = 80
 
@@ -52,6 +52,8 @@ async def append_turn(
     user_text: str,
     assistant_id: UUID,
     assistant_parts: list[dict],
+    cited_chunk_ids: list[UUID],
+    usage: dict | None,
 ) -> None:
     # Row lock serialises two turns on the same thread, so positions never collide.
     thread = await session.scalar(select(ChatThread).where(ChatThread.id == thread_id).with_for_update())
@@ -70,8 +72,14 @@ async def append_turn(
                 position=last_position + 2,
                 role="assistant",
                 parts=assistant_parts,
+                usage=usage,
             ),
         ]
+    )
+    await session.flush()  # the citation rows reference the assistant message
+    session.add_all(
+        MessageCitation(message_id=assistant_id, chunk_id=chunk_id, citation_index=index)
+        for index, chunk_id in enumerate(cited_chunk_ids, start=1)
     )
     if thread.title is None:
         thread.title = user_text[:TITLE_MAX_CHARS]

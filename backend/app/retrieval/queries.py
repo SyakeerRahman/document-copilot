@@ -1,4 +1,5 @@
 import re
+from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Integer, Text, bindparam, text
@@ -78,3 +79,23 @@ async def keyword_search(
         return []
     result = await session.execute(KEYWORD_SQL, {**_params(filters, limit), "tsquery": tsquery})
     return [SourcePassage(**row._mapping, keyword_rank=rank) for rank, row in enumerate(result, start=1)]
+
+
+NEIGHBOR_SQL = text(
+    f"""
+    select {PASSAGE_COLUMNS}
+    from document_chunks c
+    join source_documents d on d.id = c.document_id
+    where c.document_id = :document_id and c.chunk_index between :first_index and :last_index
+    order by c.chunk_index
+    """
+)
+
+
+async def chunks_in_range(
+    session: AsyncSession, document_id: UUID, first_index: int, last_index: int
+) -> list[SourcePassage]:
+    result = await session.execute(
+        NEIGHBOR_SQL, {"document_id": document_id, "first_index": first_index, "last_index": last_index}
+    )
+    return [SourcePassage(**row._mapping) for row in result]

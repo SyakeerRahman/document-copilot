@@ -25,3 +25,20 @@ export const listThreads = () => api.get<Thread[]>('/threads')
 export const createThread = () => api.post<Thread>('/threads')
 export const getThread = (threadId: string) => api.get<Thread>(`/threads/${threadId}`)
 export const getMessages = (threadId: string) => api.get<UIMessage[]>(`/threads/${threadId}/messages`)
+
+// Matches app/chat/messages.py:citation_data. Sent as the `data-citations` part of an assistant message.
+export type Citation = {
+  handle: string
+  chunkId: string
+  ticker: string
+  companyName: string
+  filingType: string
+  fiscalYear: number
+  filingDate: string
+  pageNumber: number
+  pageLabel: string | null
+  section: string
+  subsection: string | null
+  sourceUrl: string
+  excerpt: string
+}

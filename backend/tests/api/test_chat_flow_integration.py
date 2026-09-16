@@ -1,6 +1,7 @@
-"""End to end against the local Supabase stack: real sign-up, real token check, real database.
+"""End to end against the local Supabase stack: real sign-up, real token check, real database, real agent.
 
-Needs `supabase start` and `uv run alembic upgrade head`. Uses the stub reply, so no model runs.
+Needs `supabase start`, the ingested corpus, and a real OPENROUTER_API_KEY. Runs the agent for two turns,
+which costs a fraction of a cent and takes about 30 seconds.
 """
 
 import json
@@ -14,6 +15,8 @@ from app.config import settings
 from app.main import app
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+AGENT_TIMEOUT_SECONDS = 120
 
 
 async def sign_up(email: str) -> str:
@@ -50,6 +53,28 @@ def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def ask(thread_id: str, text: str) -> dict:
+    return {
+        "threadId": thread_id,
+        "message": {"id": uuid4().hex, "role": "user", "parts": [{"type": "text", "text": text}]},
+    }
+
+
+def stream_payloads(response: httpx.Response) -> list[str]:
+    return [line.removeprefix("data: ") for line in response.text.split("\n\n") if line]
+
+
+async def citation_rows(message_id: str) -> list[tuple[int, str, int]]:
+    async with await psycopg.AsyncConnection.connect(settings.database_url) as conn:
+        cursor = await conn.execute(
+            "select mc.citation_index, d.ticker, d.fiscal_year from message_citations mc "
+            "join document_chunks c on c.id = mc.chunk_id join source_documents d on d.id = c.document_id "
+            "where mc.message_id = %s order by mc.citation_index",
+            (message_id,),
+        )
+        return await cursor.fetchall()
+
+
 async def test_a_user_can_chat_and_only_they_can_read_it(api, users):
     token_a, token_b = users
 
@@ -60,25 +85,38 @@ async def test_a_user_can_chat_and_only_they_can_read_it(api, users):
     assert created.status_code == 201
     thread_id = created.json()["id"]
 
-    body = {
-        "threadId": thread_id,
-        "message": {"id": "client-1", "role": "user", "parts": [{"type": "text", "text": "What is AWS margin?"}]},
-    }
-    stream = await api.post("/chat/stream", headers=auth(token_a), json=body)
+    question = "What was AWS operating income in fiscal 2025?"
+    body = ask(thread_id, question)
+    stream = await api.post("/chat/stream", headers=auth(token_a), json=body, timeout=AGENT_TIMEOUT_SECONDS)
     assert stream.status_code == 200
     assert stream.headers["x-vercel-ai-ui-message-stream"] == "v1"
-    payloads = [line.removeprefix("data: ") for line in stream.text.split("\n\n") if line]
+    payloads = stream_payloads(stream)
     assert payloads[-1] == "[DONE]"
     assert json.loads(payloads[-2])["type"] == "finish"
+    assert "data-citations" in [json.loads(p)["type"] for p in payloads[:-1]]
 
     messages = (await api.get(f"/threads/{thread_id}/messages", headers=auth(token_a))).json()
     assert [m["role"] for m in messages] == ["user", "assistant"]
-    assert messages[0]["parts"] == [{"type": "text", "text": "What is AWS margin?"}]
-    assert "placeholder reply" in messages[1]["parts"][0]["text"]
-    assert messages[1]["id"] == json.loads(payloads[0])["messageId"]
+    assert messages[0]["parts"] == [{"type": "text", "text": question}]
+    answer_id = json.loads(payloads[0])["messageId"]
+    assert messages[1]["id"] == answer_id
+    text_part, citations_part = messages[1]["parts"]
+    assert "[P" in text_part["text"]
+    assert citations_part["type"] == "data-citations"
+    assert {(c["ticker"], c["fiscalYear"]) for c in citations_part["data"]} == {("AMZN", 2025)}
+    # The saved citation rows match the part the browser received, in order.
+    rows = await citation_rows(answer_id)
+    assert [index for index, _, _ in rows] == list(range(1, len(citations_part["data"]) + 1))
+
+    # A follow-up that only makes sense with the history: the agent must carry the company into the new year.
+    follow_up = await api.post(
+        "/chat/stream", headers=auth(token_a), json=ask(thread_id, "And in fiscal 2024?"), timeout=AGENT_TIMEOUT_SECONDS
+    )
+    follow_id = json.loads(stream_payloads(follow_up)[0])["messageId"]
+    assert ("AMZN", 2024) in {(ticker, year) for _, ticker, year in await citation_rows(follow_id)}
 
     threads_a = (await api.get("/threads", headers=auth(token_a))).json()
-    assert [(t["id"], t["title"]) for t in threads_a] == [(thread_id, "What is AWS margin?")]
+    assert [(t["id"], t["title"]) for t in threads_a] == [(thread_id, question)]
 
     assert (await api.get("/threads", headers=auth(token_b))).json() == []
     assert (await api.get(f"/threads/{thread_id}/messages", headers=auth(token_b))).status_code == 403

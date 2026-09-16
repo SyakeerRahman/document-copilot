@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import chat, threads
+from app.assistant.agent import build_agent
+from app.assistant.model import build_chat_model
 from app.config import settings
 from app.database.session import create_engine, create_sessionmaker
 
@@ -29,6 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     require_selector_loop_on_windows()
     engine = create_engine()
     app.state.sessionmaker = create_sessionmaker(engine)
+    app.state.agent = build_agent(build_chat_model(settings))
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as http:
         app.state.http = http
         yield
