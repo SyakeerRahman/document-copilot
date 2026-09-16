@@ -24,7 +24,8 @@ flowchart LR
         db[(Postgres<br/>chats, documents, chunks<br/>pgvector + full-text)]
     end
 
-    openai[OpenAI<br/>LLM + embeddings]
+    openai[OpenRouter<br/>chat model]
+    embedder[OpenRouter<br/>bge-m3 embeddings]
     corpus[SEC filing corpus]
     ingestion[Ingestion pipeline<br/>download, parse, chunk, embed]
 
@@ -38,7 +39,8 @@ flowchart LR
     backend -->|stream answer + citations| browser
 
     corpus --> ingestion
-    ingestion -->|create embeddings| openai
+    ingestion -->|create embeddings| embedder
+    backend -->|embed question| embedder
     ingestion -->|store documents + chunks| db
 ```
 
@@ -67,7 +69,7 @@ Backend:
 - FastAPI + Uvicorn
 - Pydantic v2 + pydantic-settings
 - PydanticAI for typed LLM orchestration
-- OpenAI SDK for embeddings; generation goes through an OpenAI-compatible chat API (Ollama locally, hosted in production)
+- OpenRouter for both generation (PydanticAI `OpenRouterProvider`) and embeddings (`baai/bge-m3`), in every environment
 - Supabase Python client for server-side database access
 - SQLAlchemy models + Alembic migrations for schema management
 - Supabase `pgvector` for semantic search
@@ -200,7 +202,7 @@ Retrieval and grounding remain independent from PydanticAI. This keeps ingestion
 
 Document Copilot uses hybrid retrieval:
 
-1. Embed the user's query with the configured OpenAI embedding model.
+1. Embed the user's query with the configured embedding model (prefixed with `EMBEDDING_QUERY_INSTRUCTION` when the model needs one).
 2. Run a semantic search over `document_chunks.embedding` with `pgvector`.
 3. Run a lexical search over `document_chunks.search_vector` with Postgres full-text search.
 4. Fuse the two ranked lists in Python with Reciprocal Rank Fusion.
@@ -312,7 +314,7 @@ The workflow is:
 Normal tables and ordinary indexes should be represented in SQLAlchemy models where practical. The following should be written explicitly in migrations with `op.execute()` or carefully reviewed Alembic operations:
 
 - `create extension if not exists vector`
-- `vector(1536)` embedding columns if the SQLAlchemy type renderer is not sufficient
+- `vector(1024)` embedding column changes (a dimension change needs an empty table and a full re-ingest)
 - generated `tsvector` columns
 - HNSW indexes for vector search
 - GIN indexes for full-text search and JSON metadata
@@ -364,10 +366,9 @@ Backend settings:
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `DATABASE_URL` for Alembic and direct Postgres access
-- `CHAT_MODEL_PROVIDER` (`ollama` or `openai`), `CHAT_MODEL`, `OLLAMA_BASE_URL`
-- `OPENAI_API_KEY` (embeddings, and hosted chat)
+- `OPENROUTER_API_KEY`, `CHAT_MODEL`
 - `ALLOWED_ORIGINS`
-- embedding model name and dimensions
+- `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_MAX_INPUT_TOKENS`, `EMBEDDING_QUERY_INSTRUCTION`
 
 Do not read environment variables directly from components, route handlers, or services. Frontend code should use `src/lib/env.ts`. Backend code should use `app/config.py`.
 

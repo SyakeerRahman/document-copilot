@@ -11,8 +11,8 @@ This is the FastAPI service for Document Copilot. Read [../AGENTS.md](../AGENTS.
 - `pytest` for tests
 - SQLAlchemy async over psycopg for all database reads and writes (`app/database/`). Supabase Auth is called over `httpx` to verify tokens. The Supabase Python client is installed but not used yet
 - SQLAlchemy models + Alembic migrations for database schema changes
-- PydanticAI over the OpenAI-compatible chat API: `CHAT_MODEL_PROVIDER=ollama` for local dev, `openai` for hosted. Built in `app/assistant/model.py`
-- OpenAI SDK for embeddings (always OpenAI, so dev and prod vectors are comparable)
+- PydanticAI with `OpenRouterProvider` for chat, in every environment. Built in `app/assistant/model.py`
+- OpenRouter `/embeddings` over `httpx` for embeddings in every environment (`app/embeddings.py`), so dev and prod vectors are comparable
 - Supabase `pgvector` for semantic search and Postgres full-text search for keyword retrieval. Hybrid search should run vector and full-text queries separately, then fuse ranked results in Python with Reciprocal Rank Fusion.
 - `structlog` for logging
 - `uv` for dependency + project management
@@ -74,7 +74,7 @@ backend/
 
 - **Prefer unit over integration.** Mock at the service boundary.
 - Fast suite (`pytest -m "not integration"`) must stay green and hit no network / no DB.
-- Integration tests go behind `@pytest.mark.integration` and may require live OpenAI / Supabase credentials.
+- Integration tests go behind `@pytest.mark.integration` and need local Supabase and a real `OPENROUTER_API_KEY`.
 - Tests live next to what they test (`retrieval/retriever.py` → `tests/retrieval/test_retriever.py`).
 - Required test coverage: ingestion logic, retrieval, citation extraction, grounding enforcement.
 

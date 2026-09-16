@@ -11,22 +11,46 @@ uv add fastapi uvicorn pydantic pydantic-settings httpx structlog openai supabas
 uv add --dev pytest ruff
 ```
 
-## Local chat model (Ollama)
+## Models (OpenRouter)
 
-Local development generates answers with Ollama, so no API key is needed for chat. Ollama's OpenAI-compatible API cannot set the context window per request, and its default window is small and silently drops the start of long prompts. `backend/ollama/Modelfile` fixes the window at 16k tokens.
+Chat and embeddings both go through OpenRouter, in every environment.
 
-From the repo root:
+1. Create a key at https://openrouter.ai/keys and add a few dollars of credit.
+2. Set `OPENROUTER_API_KEY` in `backend/.env`. Never commit it.
+3. Keep `CHAT_MODEL` and `EMBEDDING_MODEL` from `.env.example` unless you are deliberately changing models.
+
+The app refuses to start with a blank key. Live check, which costs a fraction of a cent:
 
 ```bash
-ollama pull qwen3:14b
-ollama create qwen3-14b-16k -f backend/ollama/Modelfile
+uv run pytest -m integration tests/assistant/test_model.py tests/test_embeddings_integration.py
 ```
 
-Then set `CHAT_MODEL_PROVIDER=ollama` and `CHAT_MODEL=qwen3-14b-16k` in `backend/.env`. Check that it runs fully on the GPU with `ollama ps` while a request is in flight.
+Changing `EMBEDDING_MODEL` means re-running ingestion. Its output dimensions must match `EMBEDDING_DIMENSIONS` and the database column (1024).
 
-Live check: `uv run pytest -m integration tests/assistant/test_model.py`.
+## Ingest the corpus
 
-Embeddings still use OpenAI in every environment, so `OPENAI_API_KEY` is needed from the ingestion step onward.
+From the repo root, download the filings. `USER_AGENT` in `data/download.py` holds the contact email SEC requires:
+
+```bash
+uv run data/download.py
+```
+
+Then from `backend/`, with Supabase running, migrations applied, and `OPENROUTER_API_KEY` set:
+
+```bash
+uv run python -m ingest --dry-run   # parse and chunk only, about 8 seconds
+uv run python -m ingest             # embed and store 7,515 chunks, about 3 million tokens
+```
+
+Filings already embedded with the current `EMBEDDING_MODEL` are skipped; filings embedded with a different model are re-embedded automatically. `--replace` re-ingests everything, and fails for any filing whose chunks are cited by a saved answer. `--ticker AAPL` limits the run to one company.
+
+## Measure retrieval
+
+```bash
+uv run python -m evals.retrieval --misses
+```
+
+Prints hit@1, hit@3, hit@10 and MRR for semantic, keyword, and hybrid search at three filter scopes, over the questions in `evals/retrieval_questions.json`. It checks the answer key against the database first and refuses semantic or hybrid search while stored vectors come from a different embedding model.
 
 ## Database migrations
 
