@@ -8,9 +8,9 @@ This project uses a Vite + React SPA because the frontend is an internal tool th
 cd frontend
 pnpm create vite . --template react-ts
 pnpm install
-pnpm add react-router-dom @supabase/supabase-js
+pnpm add react-router @supabase/supabase-js
 pnpm add -D tailwindcss @tailwindcss/vite
-pnpm dlx shadcn@latest init
+pnpm dlx shadcn@latest init -t vite -b radix
 ```
 
 ## Run
@@ -24,6 +24,6 @@ pnpm dev
 ## Check
 
 ```bash
-pnpm tsc --noEmit
+pnpm typecheck   # tsc -b; plain `tsc --noEmit` checks nothing with project references
 pnpm lint
 ```

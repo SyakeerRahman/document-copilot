@@ -67,7 +67,7 @@ Backend:
 - FastAPI + Uvicorn
 - Pydantic v2 + pydantic-settings
 - PydanticAI for typed LLM orchestration
-- OpenAI SDK for generation and embeddings
+- OpenAI SDK for embeddings; generation goes through an OpenAI-compatible chat API (Ollama locally, hosted in production)
 - Supabase Python client for server-side database access
 - SQLAlchemy models + Alembic migrations for schema management
 - Supabase `pgvector` for semantic search
@@ -255,11 +255,13 @@ Request body:
 ```json
 {
   "threadId": "uuid",
-  "messages": []
+  "message": { "id": "client-id", "role": "user", "parts": [{ "type": "text", "text": "..." }] }
 }
 ```
 
-The `messages` payload should use the AI SDK UI message format at the frontend boundary. FastAPI can translate that wire format into internal Pydantic models before invoking the agent.
+Only the new user message is sent, in the AI SDK UI message format. FastAPI loads earlier turns from the database, so a client can never inject assistant messages or citations into the history the agent sees. The frontend shapes this body with `prepareSendMessagesRequest` on `DefaultChatTransport`. FastAPI parses it with PydanticAI's `pydantic_ai.ui.vercel_ai` request and response models.
+
+Other endpoints: `GET /threads`, `POST /threads`, `GET /threads/{id}`, and `GET /threads/{id}/messages`. The last one returns AI SDK UI messages with null fields left out, because the AI SDK rejects `null` for optional fields.
 
 Streaming responsibilities:
 
@@ -267,6 +269,7 @@ Streaming responsibilities:
 - Send citation/source metadata as structured parts once available.
 - Send clear error events for authentication failures, missing threads, retrieval failures, and grounding failures.
 - Persist only after the assistant run completes successfully, unless a separate partial-message model is deliberately introduced later.
+- Send the `finish` event only after the turn is saved. If saving fails, send an `error` event instead, so the client never shows a finished answer that is missing from history.
 
 ## Data Model
 
@@ -361,7 +364,8 @@ Backend settings:
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `DATABASE_URL` for Alembic and direct Postgres access
-- `OPENAI_API_KEY`
+- `CHAT_MODEL_PROVIDER` (`ollama` or `openai`), `CHAT_MODEL`, `OLLAMA_BASE_URL`
+- `OPENAI_API_KEY` (embeddings, and hosted chat)
 - `ALLOWED_ORIGINS`
 - embedding model name and dimensions
 

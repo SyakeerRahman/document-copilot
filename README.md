@@ -19,7 +19,8 @@ Full brief: [docs/client-brief.md](docs/client-brief.md)
 | Retrieval          | Supabase `pgvector` + Postgres full-text search      |
 | Auth               | Supabase Auth (email only)                           |
 | Hosting            | Railway                                              |
-| LLM + embeddings   | OpenAI                                               |
+| Chat model         | Ollama locally, hosted OpenAI-compatible API in prod |
+| Embeddings         | OpenAI `text-embedding-3-small`                      |
 
 ## Repo layout
 

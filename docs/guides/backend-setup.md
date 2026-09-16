@@ -11,6 +11,23 @@ uv add fastapi uvicorn pydantic pydantic-settings httpx structlog openai supabas
 uv add --dev pytest ruff
 ```
 
+## Local chat model (Ollama)
+
+Local development generates answers with Ollama, so no API key is needed for chat. Ollama's OpenAI-compatible API cannot set the context window per request, and its default window is small and silently drops the start of long prompts. `backend/ollama/Modelfile` fixes the window at 16k tokens.
+
+From the repo root:
+
+```bash
+ollama pull qwen3:14b
+ollama create qwen3-14b-16k -f backend/ollama/Modelfile
+```
+
+Then set `CHAT_MODEL_PROVIDER=ollama` and `CHAT_MODEL=qwen3-14b-16k` in `backend/.env`. Check that it runs fully on the GPU with `ollama ps` while a request is in flight.
+
+Live check: `uv run pytest -m integration tests/assistant/test_model.py`.
+
+Embeddings still use OpenAI in every environment, so `OPENAI_API_KEY` is needed from the ingestion step onward.
+
 ## Database migrations
 
 Alembic owns database schema changes for this project. SQLAlchemy models describe the app tables, and Alembic migrations apply those changes to Supabase Postgres.
@@ -58,7 +75,7 @@ uv run uvicorn app.main:app --reload
 
 The `[build-system]` and `[tool.hatch.build.targets.wheel]` sections in `backend/pyproject.toml` tell uv how to install the local `app/` package. Without that package install, imports depend on the current working directory or a manually configured `PYTHONPATH`, which is fragile in notebooks and IDE run buttons.
 
-Preferred API server command:
+Preferred API server command. On Windows `--reload` is required: without it uvicorn uses the ProactorEventLoop, which psycopg async does not support, and the app refuses to start.
 
 ```bash
 cd backend

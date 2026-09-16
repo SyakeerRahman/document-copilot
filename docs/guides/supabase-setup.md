@@ -1,6 +1,37 @@
 # Supabase setup
 
-We use Supabase for **Postgres** (users, chats, source documents, chunks, embeddings, and citations) and **Auth** (email sign-in only). You need one hosted Supabase project before wiring up `backend/` and `frontend/`.
+We use Supabase for **Postgres** (users, chats, source documents, chunks, embeddings, and citations) and **Auth** (email sign-in only).
+
+- **Local development:** run the Supabase stack in Docker. No account needed. See section 0.
+- **Production:** one hosted Supabase project. See sections 1-5.
+
+## 0. Local development (no account)
+
+Needs Docker Desktop running and the Supabase CLI on your PATH.
+
+From the repo root:
+
+```bash
+supabase start           # first run downloads several GB of images
+supabase status -o env   # prints the local URL, anon key, service_role key, and DB URL
+```
+
+`supabase/config.toml` is checked in. It turns off realtime, storage, edge functions, and analytics, which this app does not use. It also turns off Supabase's own migrations: **Alembic owns the schema, so never add files under `supabase/migrations/`.**
+
+| Local service | URL |
+| ------------- | --- |
+| API (use as `SUPABASE_URL`) | `http://127.0.0.1:54321` |
+| Postgres (use as `DATABASE_URL`) | `postgresql://postgres:postgres@127.0.0.1:54322/postgres` |
+| Studio (dashboard) | `http://127.0.0.1:54323` |
+| Mailpit (catches sign-up and login emails) | `http://127.0.0.1:54324` |
+
+Copy the keys into `backend/.env` and `frontend/.env`, then apply the schema from `backend/`:
+
+```bash
+uv run alembic upgrade head
+```
+
+`supabase stop` keeps your data. `supabase stop --no-backup` deletes it.
 
 ## 1. Create an account
 

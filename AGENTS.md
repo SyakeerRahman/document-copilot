@@ -11,7 +11,9 @@ This file is the source of truth for any coding agent (Claude Code, Cursor, Code
 - **Retrieval:** Supabase `pgvector` + Postgres full-text search
 - **Auth:** Supabase Auth
 - **Hosting:** Railway (backend service + frontend service)
-- **LLM + embeddings:** OpenAI
+- **Chat model:** any OpenAI-compatible API through PydanticAI - Ollama (`qwen3-14b-16k`) for local dev, a hosted provider in production
+- **Embeddings:** OpenAI `text-embedding-3-small` in every environment
+- **Local Supabase:** `supabase start` from the repo root (Docker); hosted Supabase in production
 
 Stack is locked unless explicitly changed. Don't propose alternatives without a stated reason.
 
