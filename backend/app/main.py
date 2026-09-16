@@ -7,7 +7,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, threads
+from app.api import chat, corpus, threads
 from app.assistant.agent import build_agent
 from app.assistant.model import build_chat_model
 from app.config import settings
@@ -50,6 +50,7 @@ app.add_middleware(
 
 app.include_router(threads.router)
 app.include_router(chat.router)
+app.include_router(corpus.router)
 
 
 @app.get("/health")

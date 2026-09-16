@@ -80,6 +80,15 @@ async def test_a_user_can_chat_and_only_they_can_read_it(api, users):
 
     assert (await api.get("/threads")).status_code == 401
     assert (await api.get("/threads", headers=auth("not-a-jwt"))).status_code == 401
+    assert (await api.get("/corpus")).status_code == 401
+
+    corpus = (await api.get("/corpus", headers=auth(token_a))).json()
+    assert {c["ticker"] for c in corpus} == {"AAPL", "AMZN", "GOOGL", "MSFT", "NVDA"}
+    assert next(c for c in corpus if c["ticker"] == "AMZN") == {
+        "ticker": "AMZN",
+        "companyName": "AMAZON.COM, INC.",
+        "fiscalYears": [2021, 2022, 2023, 2024, 2025],
+    }
 
     created = await api.post("/threads", headers=auth(token_a))
     assert created.status_code == 201

@@ -42,3 +42,11 @@ export type Citation = {
   sourceUrl: string
   excerpt: string
 }
+
+export type CorpusCompany = {
+  ticker: string
+  companyName: string
+  fiscalYears: number[]
+}
+
+export const getCorpus = () => api.get<CorpusCompany[]>('/corpus')

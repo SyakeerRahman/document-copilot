@@ -1,36 +1,55 @@
 import type { UIMessage } from 'ai'
+import { AnswerMarkdown } from '@/components/chat/AnswerMarkdown'
 import { SourceList } from '@/components/chat/SourceList'
 import type { Citation } from '@/lib/api'
+import { citationsOf, isUnverified } from '@/lib/citations'
 import { cn } from '@/lib/utils'
 
-function citationsOf(message: UIMessage): Citation[] {
-  const part = message.parts.find((p) => p.type === 'data-citations')
-  return part && 'data' in part ? (part.data as Citation[]) : []
+type Props = {
+  message: UIMessage
+  onOpenCitation: (citation: Citation) => void
 }
 
-export function MessageBubble({ message }: { message: UIMessage }) {
+export function MessageBubble({ message, onOpenCitation }: Props) {
   const text = message.parts.map((part) => (part.type === 'text' ? part.text : '')).join('')
   const fromUser = message.role === 'user'
-  // Set when the draft answer failed the citation check; the text is then a notice, not an answer.
-  const unverified = message.parts.some((part) => part.type === 'data-unverified')
-  const citations = fromUser ? [] : citationsOf(message)
 
   // An assistant message exists as soon as the stream starts, but its text arrives only once verified.
   if (!fromUser && !text) return null
 
+  if (fromUser) {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-lg bg-primary px-4 py-2 text-sm whitespace-pre-wrap text-primary-foreground">
+          {text}
+        </div>
+      </div>
+    )
+  }
+
+  // Set when the draft answer failed the citation check; the text is then a notice, not an answer.
+  const unverified = isUnverified(message)
+  const citations = citationsOf(message)
+
   return (
-    <div className={cn('flex', fromUser ? 'justify-end' : 'justify-start')}>
+    <div className="flex justify-start">
       <div
         className={cn(
-          'max-w-[85%] rounded-lg px-4 py-2 text-sm',
-          fromUser && 'bg-primary text-primary-foreground',
-          !fromUser && !unverified && 'bg-muted',
-          unverified && 'border border-amber-500/60 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100',
+          'max-w-[92%] rounded-lg px-4 py-3',
+          unverified
+            ? 'border border-amber-500/60 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100'
+            : 'bg-muted',
         )}
       >
-        {unverified && <p className="mb-1 text-xs font-semibold">Not verified</p>}
-        <div className="whitespace-pre-wrap">{text}</div>
-        {citations.length > 0 && <SourceList citations={citations} />}
+        {unverified ? (
+          <>
+            <p className="mb-1 text-xs font-semibold">Not verified</p>
+            <p className="text-sm">{text}</p>
+          </>
+        ) : (
+          <AnswerMarkdown text={text} citations={citations} onOpenCitation={onOpenCitation} />
+        )}
+        {citations.length > 0 && <SourceList citations={citations} onOpenCitation={onOpenCitation} />}
       </div>
     </div>
   )
