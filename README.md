@@ -1,5 +1,7 @@
 # Document Copilot
 
+![Document Copilot: an AI chatbot that answers questions about SEC filings with retrieval and citations](docs/images/document-copilot.png)
+
 Document Copilot is an internal chatbot for investment analysts. An analyst asks a question in plain English about a set of SEC filings. The system finds the passages that answer the question and gives an answer that cites the filing and the page.
 
 ## The client
@@ -66,6 +68,7 @@ document-copilot/
 ├── docs/
 │   ├── architecture.md    # Target design and the 13-step build sequence
 │   ├── client-brief.md    # The client and what they need
+│   ├── images/            # README banner
 │   └── guides/            # Setup guides for Supabase, backend, frontend
 ├── supabase/
 │   └── config.toml        # Local Supabase stack configuration
