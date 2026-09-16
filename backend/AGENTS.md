@@ -9,9 +9,10 @@ This is the FastAPI service for Document Copilot. Read [../AGENTS.md](../AGENTS.
 - Pydantic v2 + pydantic-settings
 - `httpx` for outbound HTTP
 - `pytest` for tests
-- Supabase Python client (DB + auth)
+- SQLAlchemy async over psycopg for all database reads and writes (`app/database/`). Supabase Auth is called over `httpx` to verify tokens. The Supabase Python client is installed but not used yet
 - SQLAlchemy models + Alembic migrations for database schema changes
-- OpenAI SDK for LLM & embeddings
+- PydanticAI over the OpenAI-compatible chat API: `CHAT_MODEL_PROVIDER=ollama` for local dev, `openai` for hosted. Built in `app/assistant/model.py`
+- OpenAI SDK for embeddings (always OpenAI, so dev and prod vectors are comparable)
 - Supabase `pgvector` for semantic search and Postgres full-text search for keyword retrieval. Hybrid search should run vector and full-text queries separately, then fuse ranked results in Python with Reciprocal Rank Fusion.
 - `structlog` for logging
 - `uv` for dependency + project management
