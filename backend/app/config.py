@@ -1,7 +1,6 @@
 from pathlib import Path
-from typing import Literal, Self
 
-from pydantic import field_validator, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -16,30 +15,25 @@ class Settings(BaseSettings):
 
     database_url: str
 
-    # Chat generation. "ollama" is for local development; production uses a hosted provider.
-    chat_model_provider: Literal["openai", "ollama"]
-    chat_model: str
-    ollama_base_url: str = "http://127.0.0.1:11434/v1"
+    # Chat and embeddings both go through OpenRouter, in every environment.
+    # min_length: `OPENROUTER_API_KEY=` left blank in .env must fail at startup, not on the first request.
+    openrouter_api_key: str = Field(min_length=1)
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
-    # Embeddings always come from OpenAI so dev and prod vectors stay comparable.
-    openai_api_key: str | None = None
-    openai_embedding_model: str = "text-embedding-3-small"
-    openai_embedding_dimensions: int = 1536
+    chat_model: str = Field(min_length=1)
+
+    # Changing the embedding model means re-ingesting, and the dimensions must match the
+    # `document_chunks.embedding` column.
+    embedding_model: str = Field(min_length=1)
+    embedding_dimensions: int = 1024
+    # Checked before sending, because the API does not promise to reject over-long input rather than
+    # truncate it. Keep below the model's context window (bge-m3: 8192).
+    embedding_max_input_tokens: int = 8000
+    # Some models (qwen3-embedding) want questions, but not passages, prefixed with a task instruction.
+    embedding_query_instruction: str = ""
 
     # Comma-separated; kept as a string because pydantic-settings expects JSON for list fields.
     allowed_origins: str = "http://localhost:5173"
-
-    @field_validator("openai_api_key", mode="before")
-    @classmethod
-    def blank_is_unset(cls, value: object) -> object:
-        # `OPENAI_API_KEY=` in .env arrives as "", which should mean "not configured".
-        return None if value == "" else value
-
-    @model_validator(mode="after")
-    def openai_chat_needs_key(self) -> Self:
-        if self.chat_model_provider == "openai" and not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY is required when CHAT_MODEL_PROVIDER=openai")
-        return self
 
     @property
     def cors_origins(self) -> list[str]:

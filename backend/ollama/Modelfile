@@ -1,9 +1,0 @@
-# Local dev chat model. Ollama's OpenAI-compatible API cannot set num_ctx per request, and the
-# server default is small and truncates the front of the prompt with no error. Baking the window
-# into a named model makes the size explicit and reviewable.
-#
-# 16k fits qwen3:14b weights (~9 GB) plus KV cache in 16 GB of VRAM. 32k does not leave headroom.
-#
-# Create:  ollama create qwen3-14b-16k -f backend/ollama/Modelfile
-FROM qwen3:14b
-PARAMETER num_ctx 16384

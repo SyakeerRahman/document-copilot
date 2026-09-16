@@ -112,7 +112,7 @@ class DocumentChunk(Base):
     page: Mapped[int | None] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
     token_count: Mapped[int] = mapped_column(Integer)
-    embedding: Mapped[list[float]] = mapped_column(Vector(settings.openai_embedding_dimensions))
+    embedding: Mapped[list[float]] = mapped_column(Vector(settings.embedding_dimensions))
     search_vector: Mapped[str] = mapped_column(TSVECTOR, Computed("to_tsvector('english', content)", persisted=True))
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, server_default=text("'{}'::jsonb"))
 
