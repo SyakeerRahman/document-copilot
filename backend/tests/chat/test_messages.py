@@ -76,3 +76,22 @@ def test_history_is_capped_to_the_most_recent_messages():
     history = to_model_history(rows)
     assert len(history) == MAX_HISTORY_MESSAGES
     assert history[0].parts[0].content == "q5"
+
+
+def test_unverified_turn_is_left_out_of_history_but_the_question_stays():
+    from app.assistant.citations import CitedAnswer
+    from app.chat.messages import assistant_parts
+
+    assistant_id = uuid4()
+    notice_parts = assistant_parts(
+        assistant_id, CitedAnswer(text="I could not verify...", citations=[], unknown_handles=[]), grounded=False
+    )
+    assert notice_parts[1] == {"type": "data-unverified", "id": f"{assistant_id}-unverified", "data": {}}
+
+    rows = [
+        ChatMessage(role="user", parts=text_parts("What was AWS margin?")),
+        ChatMessage(role="assistant", parts=notice_parts),
+        ChatMessage(role="user", parts=text_parts("What was AWS operating income in 2025?")),
+    ]
+    history = to_model_history(rows)
+    assert [type(m).__name__ for m in history] == ["ModelRequest", "ModelRequest"]

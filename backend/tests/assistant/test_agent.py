@@ -6,11 +6,11 @@ from datetime import date
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ToolReturnPart
+from pydantic_ai.messages import ModelMessage, RetryPromptPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 from app.assistant.agent import build_agent
-from app.assistant.answer import AnswerDone, stream_answer
+from app.assistant.answer import UNVERIFIED_NOTICE, AnswerDone, AnswerStatus, describe_tool_call, run_answer
 from app.assistant.deps import AgentDeps
 from app.database.documents import CorpusCompany
 from app.retrieval.models import SearchFilters, SourcePassage
@@ -70,14 +70,15 @@ def scripted_model(tool: str, args: dict, answer_template: str) -> FunctionModel
     return FunctionModel(stream_function=stream)
 
 
-async def run(model: FunctionModel, deps: AgentDeps) -> tuple[str, AnswerDone]:
-    streamed, done = [], None
-    async for item in stream_answer(build_agent(model), "What was AWS operating income in 2025?", [], deps):
+async def run(model: FunctionModel, deps: AgentDeps) -> tuple[list[str], AnswerDone]:
+    statuses, done = [], None
+    async for item in run_answer(build_agent(model), "What was AWS operating income in 2025?", [], deps):
         if isinstance(item, AnswerDone):
             done = item
         else:
-            streamed.append(item)
-    return "".join(streamed), done
+            assert isinstance(item, AnswerStatus)
+            statuses.append(item.text)
+    return statuses, done
 
 
 @pytest.mark.anyio
@@ -89,26 +90,18 @@ async def test_search_answer_and_citation_resolve_to_the_passage_the_tool_return
         "AWS operating income was $45,606 million |[{handle}].",
     )
 
-    streamed, done = await run(model, corpus.deps())
+    statuses, done = await run(model, corpus.deps())
 
     assert corpus.searches == [("AWS operating income", SearchFilters(tickers=("AMZN",), fiscal_years=(2025,)))]
-    assert streamed == done.answer.text == "AWS operating income was $45,606 million [P1]."
+    assert statuses == ["Reading the question", "Searching AMZN fiscal 2025: AWS operating income"]
+    assert done.grounded
+    assert done.rejected_drafts == []
+    assert done.answer.text == "AWS operating income was $45,606 million [P1]."
     assert [(c.handle, c.passage) for c in done.answer.citations] == [("P1", AWS_PASSAGE)]
     assert done.answer.unknown_handles == []
     assert done.usage["requests"] == 2
     assert done.usage["tool_calls"] == 1
     assert done.usage["passages_shown"] == 1
-
-
-@pytest.mark.anyio
-async def test_citing_a_handle_no_tool_returned_is_reported_as_unknown():
-    corpus = FakeCorpus()
-    model = scripted_model("search_filings", {"query": "AWS"}, "AWS earned $1 [{handle}] and 99% margin [P9].")
-
-    _, done = await run(model, corpus.deps())
-
-    assert [c.handle for c in done.answer.citations] == ["P1"]
-    assert done.answer.unknown_handles == ["P9"]
 
 
 @pytest.mark.anyio
@@ -122,7 +115,7 @@ async def test_tool_result_shows_the_model_where_each_passage_comes_from():
             yield {0: DeltaToolCall(name="search_filings", json_args='{"query": "AWS"}', tool_call_id="c1")}
             return
         shown.extend(returns)
-        yield "done"
+        yield "AWS earned $45,606 million [P1]."
 
     await run(FunctionModel(stream_function=stream), corpus.deps())
 
@@ -168,39 +161,91 @@ def test_instructions_include_the_product_contract():
         assert rule in instructions
 
 
-@pytest.mark.anyio
-async def test_text_written_before_a_tool_call_never_reaches_the_answer_stream():
-    corpus = FakeCorpus()
-
-    async def stream(messages: list[ModelMessage], info: AgentInfo):
-        if not tool_returns(messages):
-            yield "Let me search the filings first. "
-            yield {1: DeltaToolCall(name="search_filings", json_args='{"query": "AWS"}', tool_call_id="c1")}
-            return
-        yield "AWS earned $45,606 million [P1]."
-
-    streamed, done = await run(FunctionModel(stream_function=stream), corpus.deps())
-
-    assert streamed == done.answer.text == "AWS earned $45,606 million [P1]."
+def retry_feedback(messages: list[ModelMessage]) -> list[str]:
+    return [part.model_response() for m in messages for part in m.parts if isinstance(part, RetryPromptPart)]
 
 
 @pytest.mark.anyio
-async def test_long_answer_streams_in_pieces_after_the_holdback():
+async def test_invented_handle_is_sent_back_and_the_revised_answer_is_shown():
     corpus = FakeCorpus()
-    sentence = "AWS operating income grew because sales grew [P1]. "
+    feedback_seen: list[str] = []
 
     async def stream(messages: list[ModelMessage], info: AgentInfo):
         if not tool_returns(messages):
             yield {0: DeltaToolCall(name="search_filings", json_args='{"query": "AWS"}', tool_call_id="c1")}
             return
-        for _ in range(20):
-            yield sentence
+        feedback = retry_feedback(messages)
+        if not feedback:
+            yield "AWS earned $45,606 million [P1] with a 99% margin [P9]."
+            return
+        feedback_seen.extend(feedback)
+        yield "AWS earned $45,606 million [P1]."
 
-    pieces: list[str] = []
-    async for item in stream_answer(build_agent(FunctionModel(stream_function=stream)), "q", [], corpus.deps()):
-        if not isinstance(item, AnswerDone):
-            pieces.append(item)
+    _, done = await run(FunctionModel(stream_function=stream), corpus.deps())
 
-    assert "".join(pieces) == sentence * 20
-    assert len(pieces) > 10  # held back once, then one piece per model delta
-    assert len(pieces[0]) >= 300
+    assert done.grounded
+    assert done.answer.text == "AWS earned $45,606 million [P1]."
+    assert [c.handle for c in done.answer.citations] == ["P1"]
+    assert len(done.rejected_drafts) == 1
+    assert "[P9] was not returned by any tool in this turn." in done.rejected_drafts[0]
+    assert '"99%" does not appear' in feedback_seen[0]
+
+
+@pytest.mark.anyio
+async def test_answer_that_never_passes_is_replaced_by_the_unverified_notice():
+    corpus = FakeCorpus()
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo):
+        if not tool_returns(messages):
+            yield {0: DeltaToolCall(name="search_filings", json_args='{"query": "AWS"}', tool_call_id="c1")}
+            return
+        yield "AWS operating margin was 37% [P1]."  # the passage never states 37%
+
+    _, done = await run(FunctionModel(stream_function=stream), corpus.deps())
+
+    assert not done.grounded
+    assert done.answer.text == UNVERIFIED_NOTICE
+    assert done.answer.citations == []
+    assert len(done.rejected_drafts) == 3  # the first draft and both retries
+    assert done.usage["grounding"] == {"grounded": False, "rejected_drafts": 3, "violations": done.rejected_drafts}
+
+
+@pytest.mark.anyio
+async def test_decline_sentence_answer_with_no_citations_is_grounded():
+    from app.grounding.validator import NO_EVIDENCE_SENTENCE
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo):
+        yield f"Tesla is not in the corpus. {NO_EVIDENCE_SENTENCE}"
+
+    statuses, done = await run(FunctionModel(stream_function=stream), FakeCorpus().deps())
+
+    assert done.grounded
+    assert statuses == ["Reading the question"]
+    assert done.answer.citations == []
+
+
+@pytest.mark.anyio
+async def test_model_errors_are_not_mistaken_for_grounding_failures():
+    async def stream(messages: list[ModelMessage], info: AgentInfo):
+        raise RuntimeError("provider down")
+        yield ""  # pragma: no cover
+
+    with pytest.raises(RuntimeError, match="provider down"):
+        await run(FunctionModel(stream_function=stream), FakeCorpus().deps())
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "status"),
+    [
+        (
+            "search_filings",
+            {"query": "capex", "tickers": ["MSFT", "GOOGL"], "fiscal_years": [2024, 2025]},
+            "Searching MSFT, GOOGL fiscal 2024, 2025: capex",
+        ),
+        ("search_filings", {"query": "AI risk", "tickers": ["NVDA"]}, "Searching NVDA: AI risk"),
+        ("search_filings", {"query": "revenue"}, "Searching all filings: revenue"),
+        ("read_surrounding_chunks", {"handle": "P1"}, "Reading the surrounding passages"),
+    ],
+)
+def test_tool_calls_become_readable_status_lines(tool, args, status):
+    assert describe_tool_call(tool, args) == status

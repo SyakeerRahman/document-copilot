@@ -18,3 +18,5 @@ class AgentDeps:
     chunks_in_range: ChunkRangeFn
     corpus: list[CorpusCompany]
     passages: PassageRegistry = field(default_factory=PassageRegistry)
+    # Violations of each rejected draft, in order. The turn fails if the model cannot fix them in time.
+    grounding_failures: list[list[str]] = field(default_factory=list)

@@ -23,7 +23,17 @@ export function ChatPanel({ threadId, initialMessages }: Props) {
         }),
       }),
   )
-  const { messages, sendMessage, status, error, stop } = useChat({ id: threadId, messages: initialMessages, transport })
+  // The API sends no answer text until the answer passes its citation check. Until then it sends transient
+  // status parts ("Searching AMZN fiscal 2025: AWS operating income"), which arrive here and are never saved.
+  const [progress, setProgress] = useState<string | null>(null)
+  const { messages, sendMessage, status, error, stop } = useChat({
+    id: threadId,
+    messages: initialMessages,
+    transport,
+    onData: (part) => {
+      if (part.type === 'data-status') setProgress((part.data as { text: string }).text)
+    },
+  })
   const busy = status === 'submitted' || status === 'streaming'
 
   const endRef = useRef<HTMLDivElement>(null)
@@ -43,7 +53,7 @@ export function ChatPanel({ threadId, initialMessages }: Props) {
           {messages.map((message) => (
             <MessageBubble key={message.id} message={message} />
           ))}
-          {status === 'submitted' && <p className="text-sm text-muted-foreground">Thinking…</p>}
+          {busy && <p className="text-sm text-muted-foreground">{progress ?? 'Thinking…'}</p>}
           {error && (
             <Alert variant="destructive">
               <AlertDescription>{error.message}</AlertDescription>
@@ -52,7 +62,14 @@ export function ChatPanel({ threadId, initialMessages }: Props) {
           <div ref={endRef} />
         </div>
       </div>
-      <Composer busy={busy} onSend={(text) => void sendMessage({ text })} onStop={() => void stop()} />
+      <Composer
+        busy={busy}
+        onSend={(text) => {
+          setProgress(null)
+          void sendMessage({ text })
+        }}
+        onStop={() => void stop()}
+      />
     </div>
   )
 }

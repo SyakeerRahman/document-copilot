@@ -10,6 +10,8 @@ MAX_USER_MESSAGE_CHARS = 4000
 # Enough for follow-ups like "and in 2023?" without sending a long thread to the model on every turn.
 MAX_HISTORY_MESSAGES = 10
 CITATIONS_PART_TYPE = "data-citations"
+# Marks an assistant message whose draft failed the grounding check; its text is the unverified notice.
+UNVERIFIED_PART_TYPE = "data-unverified"
 
 
 class InvalidUserMessage(ValueError):
@@ -58,8 +60,14 @@ def citations_part_id(assistant_id: UUID) -> str:
     return f"{assistant_id}-citations"
 
 
-def assistant_parts(assistant_id: UUID, answer: CitedAnswer) -> list[dict]:
+def unverified_part_id(assistant_id: UUID) -> str:
+    return f"{assistant_id}-unverified"
+
+
+def assistant_parts(assistant_id: UUID, answer: CitedAnswer, *, grounded: bool = True) -> list[dict]:
     parts = text_parts(answer.text)
+    if not grounded:
+        parts.append({"type": UNVERIFIED_PART_TYPE, "id": unverified_part_id(assistant_id), "data": {}})
     if answer.citations:
         parts.append(
             {"type": CITATIONS_PART_TYPE, "id": citations_part_id(assistant_id), "data": citation_data(answer)}
@@ -75,6 +83,9 @@ def to_model_history(rows: list[ChatMessage]) -> list[ModelMessage]:
     history: list[ModelMessage] = []
     for row in rows[-MAX_HISTORY_MESSAGES:]:
         text = message_text(row.parts)
+        if any(part.get("type") == UNVERIFIED_PART_TYPE for part in row.parts):
+            # The model never produced a verified answer for this question; the notice is not an answer to build on.
+            continue
         if row.role == "user":
             history.append(ModelRequest(parts=[UserPromptPart(content=text)]))
         else:

@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from app.assistant.agent import build_agent
-from app.assistant.answer import AnswerDone, stream_answer
+from app.assistant.answer import AnswerDone, run_answer
 from app.assistant.model import build_chat_model
 from app.assistant.runtime import database_deps
 from app.config import settings
@@ -25,7 +25,7 @@ async def test_answer_cites_only_retrieved_passages_from_the_right_filing():
             agent = build_agent(build_chat_model(settings))
 
             done = None
-            async for item in stream_answer(
+            async for item in run_answer(
                 agent, "How much did Apple's Services net sales grow in fiscal 2025?", [], deps
             ):
                 if isinstance(item, AnswerDone):
@@ -37,3 +37,4 @@ async def test_answer_cites_only_retrieved_passages_from_the_right_filing():
     assert done.answer.citations, done.answer.text
     assert done.answer.unknown_handles == []
     assert ("AAPL", 2025) in {(c.passage.ticker, c.passage.fiscal_year) for c in done.answer.citations}
+    assert done.grounded, done.rejected_drafts

@@ -1,17 +1,10 @@
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import structlog
 from pydantic_ai import Agent, AgentRunResultEvent
-from pydantic_ai.messages import (
-    FunctionToolResultEvent,
-    ModelMessage,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ToolCallPart,
-)
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.messages import FunctionToolCallEvent, ModelMessage
 
 from app.assistant.agent import USAGE_LIMITS
 from app.assistant.citations import CitedAnswer, extract_citations
@@ -19,83 +12,101 @@ from app.assistant.deps import AgentDeps
 
 logger = structlog.get_logger()
 
-# Text a model writes before a tool call ("Let me search...") is short. Holding back this much of each model
-# response before streaming it keeps that preamble out of the answer at the cost of a brief first-word delay.
-# PydanticAI's FinalResultEvent cannot decide this: it fires when text starts, even if a tool call follows.
-HOLDBACK_CHARS = 300
+UNVERIFIED_NOTICE = (
+    "I could not verify an answer against the filings, so I am not showing one. "
+    "Try a narrower question, for example about one company and one fiscal year."
+)
+
+
+@dataclass(frozen=True)
+class AnswerStatus:
+    """Progress while the answer is not ready. The browser shows it; it is never saved."""
+
+    text: str
 
 
 @dataclass(frozen=True)
 class AnswerDone:
     answer: CitedAnswer
     usage: dict
+    grounded: bool = True
+    # Violations of each draft the grounding check rejected, including drafts the model later fixed.
+    rejected_drafts: list[list[str]] = field(default_factory=list)
 
 
-async def stream_answer(
+async def run_answer(
     agent: Agent[AgentDeps, str], question: str, history: Sequence[ModelMessage], deps: AgentDeps
-) -> AsyncIterator[str | AnswerDone]:
-    """Yield the answer text as the model writes it, then one AnswerDone with the citations resolved.
+) -> AsyncIterator[AnswerStatus | AnswerDone]:
+    """Run the agent to a grounded answer, reporting progress on the way.
 
-    The answer and its citations come from the run's final output. Streamed text matches it unless a model
-    writes more than HOLDBACK_CHARS before a tool call; that case is logged.
+    No answer text is released before the grounding check passes: the output validator on the agent checks
+    every draft, sends violations back to the model, and fails the run after OUTPUT_RETRIES rejected drafts.
+    A failed run yields the unverified notice instead of the draft.
     """
-    streamed: list[str] = []
-    pending: list[str] = []  # text of the current model response not yet sent
-    live = False  # the current response has passed the holdback and streams directly
+    model_name = agent.model.model_name if agent.model else None
+    yield AnswerStatus("Reading the question")
     result = None
-
-    async with agent.run_stream_events(
-        question, deps=deps, message_history=list(history), usage_limits=USAGE_LIMITS
-    ) as events:
-        async for event in events:
-            delta = _text_delta(event)
-            if delta:
-                if live:
-                    streamed.append(delta)
-                    yield delta
-                    continue
-                pending.append(delta)
-                if sum(map(len, pending)) >= HOLDBACK_CHARS:
-                    live = True
-                    released = "".join(pending)
-                    pending.clear()
-                    streamed.append(released)
-                    yield released
-            elif isinstance(event, PartStartEvent) and isinstance(event.part, ToolCallPart):
-                if pending:
-                    logger.info("discarded_text_before_tool_call", chars=sum(map(len, pending)))
-                    pending.clear()
-            elif isinstance(event, FunctionToolResultEvent):
-                live = False  # the next model response gets its own holdback
-            elif isinstance(event, AgentRunResultEvent):
-                result = event.result
+    try:
+        async with agent.run_stream_events(
+            question, deps=deps, message_history=list(history), usage_limits=USAGE_LIMITS
+        ) as events:
+            async for event in events:
+                if isinstance(event, FunctionToolCallEvent):
+                    yield AnswerStatus(describe_tool_call(event.part.tool_name, event.part.args_as_dict()))
+                elif isinstance(event, AgentRunResultEvent):
+                    result = event.result
+    except (UnexpectedModelBehavior, UsageLimitExceeded) as exc:
+        if not deps.grounding_failures:
+            raise  # a real failure, not a rejected answer
+        logger.warning(
+            "answer_failed_grounding", rejected_drafts=len(deps.grounding_failures), error=type(exc).__name__
+        )
+        yield AnswerDone(
+            answer=CitedAnswer(text=UNVERIFIED_NOTICE, citations=[], unknown_handles=[]),
+            usage={"model": model_name, "grounding": grounding_usage(deps, grounded=False)},
+            grounded=False,
+            rejected_drafts=deps.grounding_failures,
+        )
+        return
 
     if result is None:
         raise RuntimeError("agent run ended without a result")
-    if pending:
-        tail = "".join(pending)
-        streamed.append(tail)
-        yield tail
-    if "".join(streamed) != result.output:
-        logger.warning("streamed_text_differs_from_output", streamed_chars=len("".join(streamed)))
-
     usage = result.usage
     yield AnswerDone(
         answer=extract_citations(result.output, deps.passages),
         usage={
-            "model": agent.model.model_name if agent.model else None,
+            "model": model_name,
             "requests": usage.requests,
             "tool_calls": usage.tool_calls,
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
             "passages_shown": len(deps.passages),
+            "grounding": grounding_usage(deps, grounded=True),
         },
+        rejected_drafts=deps.grounding_failures,
     )
 
 
-def _text_delta(event: object) -> str | None:
-    if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-        return event.part.content or None
-    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-        return event.delta.content_delta or None
-    return None
+def grounding_usage(deps: AgentDeps, *, grounded: bool) -> dict:
+    return {
+        "grounded": grounded,
+        "rejected_drafts": len(deps.grounding_failures),
+        "violations": deps.grounding_failures,
+    }
+
+
+def describe_tool_call(tool_name: str, args: dict) -> str:
+    if tool_name == "search_filings":
+        scope = " ".join(
+            part
+            for part in (
+                ", ".join(ticker.upper() for ticker in args.get("tickers") or []),
+                ("fiscal " + ", ".join(map(str, args["fiscal_years"]))) if args.get("fiscal_years") else "",
+            )
+            if part
+        )
+        query = args.get("query", "")
+        return f"Searching {scope}: {query}" if scope else f"Searching all filings: {query}"
+    if tool_name == "read_surrounding_chunks":
+        return "Reading the surrounding passages"
+    return "Working"

@@ -1,18 +1,28 @@
 from pathlib import Path
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
 from app.assistant.deps import AgentDeps
+from app.grounding.validator import NO_ADVICE_SENTENCE, NO_EVIDENCE_SENTENCE, check_grounding
 from app.retrieval.models import SearchFilters, SourcePassage
 
-INSTRUCTIONS = Path(__file__).with_name("instructions.md").read_text(encoding="utf-8")
+# The decline sentences live in the validator, so the model is told exactly what the check accepts.
+INSTRUCTIONS = (
+    Path(__file__)
+    .with_name("instructions.md")
+    .read_text(encoding="utf-8")
+    .replace("{{NO_EVIDENCE_SENTENCE}}", NO_EVIDENCE_SENTENCE)
+    .replace("{{NO_ADVICE_SENTENCE}}", NO_ADVICE_SENTENCE)
+)
 
-PASSAGES_PER_SEARCH = 6
 MAX_NEIGHBORS = 2
-# A turn that needs more than this is looping, not researching. Each request is one model call.
-USAGE_LIMITS = UsageLimits(request_limit=8, tool_calls_limit=12)
+# An answer that fails the grounding check goes back to the model this many times before the turn fails.
+OUTPUT_RETRIES = 2
+# A turn that needs more than this is looping, not researching. Each request is one model call, and each
+# grounding retry adds one.
+USAGE_LIMITS = UsageLimits(request_limit=10, tool_calls_limit=12)
 
 
 def format_passage(handle: str, passage: SourcePassage) -> str:
@@ -25,7 +35,19 @@ def format_passage(handle: str, passage: SourcePassage) -> str:
 
 
 def build_agent(model: Model) -> Agent[AgentDeps, str]:
-    agent = Agent(model, deps_type=AgentDeps, output_type=str, instructions=INSTRUCTIONS)
+    agent = Agent(
+        model, deps_type=AgentDeps, output_type=str, instructions=INSTRUCTIONS, retries={"output": OUTPUT_RETRIES}
+    )
+
+    @agent.output_validator
+    def grounded(ctx: RunContext[AgentDeps], output: str) -> str:
+        if ctx.partial_output:
+            return output
+        report = check_grounding(output, ctx.deps.passages)
+        if not report.grounded:
+            ctx.deps.grounding_failures.append(report.violations)
+            raise ModelRetry(report.feedback())
+        return output
 
     @agent.instructions
     def corpus_contents(ctx: RunContext[AgentDeps]) -> str:

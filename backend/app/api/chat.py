@@ -6,7 +6,7 @@ from pydantic_ai.ui.vercel_ai.request_types import UIMessage
 
 from app.api.models import ApiModel
 from app.api.threads import get_owned_thread
-from app.assistant.answer import AnswerDone, stream_answer
+from app.assistant.answer import AnswerDone, run_answer
 from app.assistant.runtime import database_deps
 from app.auth.dependencies import CurrentUserDep
 from app.chat.messages import InvalidUserMessage, assistant_parts, extract_user_text, text_parts, to_model_history
@@ -40,7 +40,7 @@ async def stream_chat(
     deps = await database_deps(sessionmaker, request.app.state.http)
 
     def generate(question: str):
-        return stream_answer(request.app.state.agent, question, history, deps)
+        return run_answer(request.app.state.agent, question, history, deps)
 
     async def persist(assistant_id: UUID, done: AnswerDone) -> None:
         async with sessionmaker() as turn_session:
@@ -50,7 +50,7 @@ async def stream_chat(
                 user_parts=text_parts(question),
                 user_text=question,
                 assistant_id=assistant_id,
-                assistant_parts=assistant_parts(assistant_id, done.answer),
+                assistant_parts=assistant_parts(assistant_id, done.answer, grounded=done.grounded),
                 cited_chunk_ids=[citation.passage.chunk_id for citation in done.answer.citations],
                 usage=done.usage,
             )

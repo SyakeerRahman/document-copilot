@@ -7,9 +7,11 @@
 Answerable questions reuse the retrieval answer key (evals/retrieval_questions.json). Each question is
 asked with its company and fiscal year, as an analyst would ask it. For each answer the eval checks:
 
+- grounded: the answer passed the grounding check (app/grounding/validator.py), possibly after revisions.
 - cited: the answer has at least one citation.
 - valid: every citation handle was shown to the model in this turn (none invented).
 - expected: at least one cited passage is an answer-key passage for that question.
+- drafts: how many drafts the grounding check rejected before the answer passed or the turn failed.
 
 Decline questions have no right passage. They are printed for a person to read, because "declined
 correctly" is a judgement: a good answer to "should I buy" can still cite filings.
@@ -24,7 +26,7 @@ from dataclasses import dataclass, replace
 import httpx
 
 from app.assistant.agent import build_agent
-from app.assistant.answer import AnswerDone, stream_answer
+from app.assistant.answer import AnswerDone, run_answer
 from app.assistant.model import build_chat_model
 from app.assistant.runtime import database_deps
 from app.config import settings
@@ -49,6 +51,14 @@ class Outcome:
     question: Question | None = None
 
     @property
+    def grounded(self) -> bool:
+        return bool(self.done and self.done.grounded)
+
+    @property
+    def drafts_rejected(self) -> int:
+        return len(self.done.rejected_drafts) if self.done else 0
+
+    @property
     def cited(self) -> bool:
         return bool(self.done and self.done.answer.citations)
 
@@ -69,7 +79,7 @@ async def ask(agent, deps_factory, label: str, prompt: str, semaphore: asyncio.S
         try:
             deps = await deps_factory()
             done = None
-            async for item in stream_answer(agent, prompt, [], deps):
+            async for item in run_answer(agent, prompt, [], deps):
                 if isinstance(item, AnswerDone):
                     done = item
             return Outcome(label, prompt, done, time.perf_counter() - started)
@@ -112,23 +122,26 @@ async def run(model_name: str, show_answers: bool) -> int:
     declined = results[len(questions) :]
 
     print(f"model {model_name}, {len(answered)} answerable questions, {len(declined)} decline questions\n")
-    print(f"{'question':38} {'cited':>5} {'valid':>5} {'expected':>8} {'cites':>5} {'secs':>5} {'tokens in/out':>14}")
+    header = f"{'question':38} {'grounded':>8} {'drafts':>6} {'cited':>5} {'valid':>5} {'expected':>8} {'cites':>5}"
+    print(f"{header} {'secs':>5} {'tokens in/out':>14}")
     for o in answered:
         usage = o.done.usage if o.done else {}
         tokens = f"{usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}"
         flags = "ERROR " + (o.error or "")[:60] if o.error else ""
         print(
-            f"{o.label:38} {yes(o.cited):>5} {yes(o.valid):>5} {yes(o.expected):>8} "
-            f"{len(o.done.answer.citations) if o.done else 0:>5} {o.seconds:5.1f} {tokens:>14} {flags}"
+            f"{o.label:38} {yes(o.grounded):>8} {o.drafts_rejected:>6} {yes(o.cited):>5} {yes(o.valid):>5} "
+            f"{yes(o.expected):>8} {len(o.done.answer.citations) if o.done else 0:>5} {o.seconds:5.1f} "
+            f"{tokens:>14} {flags}"
         )
 
     n = len(answered)
-    rate = lambda attr: sum(getattr(o, attr) for o in answered) / n
     seconds = sorted(o.seconds for o in answered)
     total_in = sum((o.done.usage.get("input_tokens") or 0) for o in results if o.done)
     total_out = sum((o.done.usage.get("output_tokens") or 0) for o in results if o.done)
     print(
-        f"\ncited {rate('cited'):.2f}   valid {rate('valid'):.2f}   expected {rate('expected'):.2f}   "
+        f"\ngrounded {share(answered, 'grounded'):.2f}   cited {share(answered, 'cited'):.2f}   "
+        f"valid {share(answered, 'valid'):.2f}   expected {share(answered, 'expected'):.2f}   "
+        f"answers revised {sum(1 for o in answered if o.drafts_rejected)}   "
         f"median {seconds[n // 2]:.1f}s   max {seconds[-1]:.1f}s   tokens {total_in} in / {total_out} out   "
         f"errors {sum(1 for o in results if o.error)}"
     )
@@ -140,8 +153,18 @@ async def run(model_name: str, show_answers: bool) -> int:
             print(f"ERROR {o.error}")
             continue
         citations = o.done.answer.citations
-        print(f"[{len(citations)} citations, unknown handles {o.done.answer.unknown_handles}]")
+        print(f"[grounded {yes(o.grounded)}, {o.drafts_rejected} drafts rejected, {len(citations)} citations]")
         print(o.done.answer.text.strip())
+
+    rejected = [o for o in results if o.done and o.done.rejected_drafts]
+    if rejected:
+        print("\nRejected drafts (what the grounding check sent back):")
+        for o in rejected:
+            outcome = "then passed" if o.grounded else "never passed"
+            print(f"\n--- {o.label} ({len(o.done.rejected_drafts)} rejected, {outcome})")
+            for number, violations in enumerate(o.done.rejected_drafts, 1):
+                for violation in violations:
+                    print(f"  draft {number}: {violation[:150]}")
 
     if show_answers:
         for o in answered:
@@ -156,6 +179,10 @@ async def run(model_name: str, show_answers: bool) -> int:
 
 def yes(value: bool) -> str:
     return "yes" if value else "NO"
+
+
+def share(outcomes: list[Outcome], attribute: str) -> float:
+    return sum(getattr(outcome, attribute) for outcome in outcomes) / len(outcomes)
 
 
 def main() -> None:
