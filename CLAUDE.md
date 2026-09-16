@@ -14,7 +14,7 @@ The build rules for this repo live in the `AGENTS.md` tree, not here. This file 
 
 ## Current state
 
-Architecture steps 1-12 are done. A signed-in user asks a question; the PydanticAI agent (`backend/app/assistant/`) searches the 25 ingested filings and drafts an answer with `[P3]`-style citations. Every draft passes through the grounding check (`backend/app/grounding/validator.py`) before the user sees any text; failed drafts go back to the model up to 2 times, and a turn that never passes shows an unverified notice instead. While the agent works, the browser shows transient status lines. Verified answers carry a `data-citations` part and `message_citations` rows. The frontend shows a minimal "Sources" list (`frontend/src/components/chat/SourceList.tsx`); the full citation UI with Markdown rendering (step 13) does not exist yet.
+All 13 architecture steps are done. A signed-in user asks a question; the PydanticAI agent (`backend/app/assistant/`) searches the 25 ingested filings and drafts an answer with `[P3]`-style citations. Every draft passes through the grounding check (`backend/app/grounding/validator.py`) before the user sees any text; failed drafts go back to the model up to 2 times, and a turn that never passes shows an unverified notice instead. While the agent works, the browser shows transient status lines. The verified answer renders as Markdown with citation buttons that open a source panel with the exact passage. Nothing is deployed yet: there is no hosted Supabase project and no Railway service.
 
 Chat and embeddings go through **OpenRouter** in every environment (`OPENROUTER_API_KEY` in `backend/.env`). Supabase runs locally in Docker. No hosted Supabase project exists yet. Rationale: `brain/decisions/2026-09-16-models-go-through-openrouter.md` in the workspace root, which supersedes the two earlier Ollama decisions.
 
@@ -107,6 +107,14 @@ Rules that shape most decisions:
 - Embedded text is `company, form, fiscal year, section > subsection` plus the chunk (`ingest/pipeline.py:embedding_input`); the stored `content` is the chunk alone.
 - Section detection: Amazon writes Item headings as single-row two-cell tables; Microsoft repeats "PART II / Item 7" at the top of every page; Alphabet repeats a one-row table "Table of Contents | Alphabet Inc.". All are handled in `filing_html.py:_strip_running_headers`. Every table of contents in the corpus is a multi-row table, so several Item headings on one page are real, not a TOC. NVIDIA's financial statements sit under Item 15, which is correct.
 - The Windows console mangles curly quotes when printing filing text (`�`). The files are valid UTF-8; set `PYTHONIOENCODING=utf-8` when printing chunks.
+
+### Chat UI (frontend)
+
+- `ChatPanel` owns one `SourcePanel` (shadcn Sheet) for the whole chat; `MessageBubble`, `AnswerMarkdown`, `CitationChip`, and `SourceList` only call `onOpenCitation`.
+- `AnswerMarkdown` renders with `react-markdown` + `remark-gfm` (no raw HTML). `lib/citations.ts:linkCitations` rewrites `[P3]` into a `#cite-P3` link before parsing, and the custom `a` component draws a `CitationChip` instead of an anchor. A handle missing from the citations part renders as plain text.
+- `prepareSendMessagesRequest` sends the last **user** message (`findLast`), not `messages.at(-1)`: "Try again" calls `regenerate()`, and a failed turn saves nothing server-side, so the same question is resent.
+- `lib/chatErrors.ts:describeChatError` maps the three failure shapes from `useChat` (fetch failure, JSON `detail` from an HTTP error, stream error sentence) to readable text. Its detail strings must match the backend's `HTTPException` details.
+- `EmptyChat` reads `GET /corpus` (authenticated, `app/api/corpus.py`) for the coverage list and shows only example questions whose ticker is in the corpus.
 
 ### Agent and citations
 

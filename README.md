@@ -20,9 +20,9 @@ The build follows the 13-step sequence at the end of [docs/architecture.md](docs
 | 9-10 | Hybrid search (vector and keyword) with a retrieval eval | Done |
 | 11 | Agent that answers from retrieved passages, with citations | Done |
 | 12 | Citation validation and grounding checks | Done |
-| 13 | UI for citations, source passages, empty states, and errors | Not started |
+| 13 | UI for citations, source passages, empty states, and errors | Done |
 
-**What works today:** you can sign in, ask a question about the 25 filings, and get an answer with citations. While the agent works, the chat shows what it searches. The system checks every answer against its sources before you see it. If an answer fails the check, the chat shows a clear notice instead of the answer. Each citation opens the source passage, and the chat keeps everything after a reload. The chat shows Markdown tables as plain text until step 13.
+**What works today:** all 13 steps of the build sequence are done. You can sign in, ask a question about the 25 filings, and get an answer with citations. While the agent works, the chat shows what it searches. The system checks every answer against its sources before you see it. If an answer fails the check, the chat shows a clear notice instead of the answer. Each citation opens the source passage, and the chat keeps everything after a reload.
 
 ## How it works
 
@@ -450,16 +450,18 @@ pnpm dev
 1. Open http://localhost:5173. The app sends you to the sign-in page.
 2. Select **No account yet? Create one**.
 3. Enter any email address and a password of at least 6 characters.
-4. Select **Start a chat**.
-5. Type a question, for example "How did AWS operating income compare with North America and International in fiscal 2025?", and press Enter.
+4. Select **Start a chat**. The empty chat lists the companies and fiscal years in the corpus, and 4 example questions.
+5. Select an example question, or type your own, for example "How did AWS operating income compare with North America and International in fiscal 2025?", and press Enter.
 
 **Example result:**
 
 - A status line shows what the agent does, for example `Searching AMZN fiscal 2025: AWS operating income segment`. No answer text shows yet.
 - After about 20 to 30 seconds, the whole answer appears at once. The system shows it only after it passes the grounding check.
 - The answer starts like this: `AWS was the most profitable of Amazon's three segments in fiscal 2025, with operating income of $45,606 million, versus $29,619 million for North America and $4,750 million for International [P4][P7].`
-- A **Sources** list follows the answer. Each source names the filing, the page, and the section, for example `[P7] AMAZON.COM, INC. 10-K, fiscal 2025, page 68, Item 8. Financial Statements and Supplementary Data > Note 10`.
-- Select a source to see the passage text and a link to the filing on SEC.gov.
+- Tables in the answer show as tables. Each citation shows as a small button, for example **P7**, next to the claim that it supports.
+- A **Sources** list follows the answer. Each source names the ticker, the form, the fiscal year, the page, and the section, for example `AMZN 10-K, FY2025, page 68` with `Item 8. Financial Statements and Supplementary Data > Note 10`.
+- Select a citation button or a source. A panel opens on the right with the company, the filing date, the page, the section, the exact passage text, and a link to the full filing on SEC.gov.
+- If the service cannot be reached, a red message shows with a **Try again** button. The button sends the same question again.
 - When you reload the page, the question, the answer, and the sources are still there.
 - The chat list shows the chat, with the first question as its title.
 
@@ -554,6 +556,8 @@ Each decision below has a reason. A change to one of them needs a new reason.
 | The chat shows no answer text until the answer passes the grounding check. A status line shows progress instead. | The client brief says a wrong but confident answer is worse than no answer. The search takes most of the wait, so streaming the text saved only about 3 seconds. |
 | Code, not a model, checks the citations and the numbers in each answer. | A check that a model runs can make the same mistake as the answer. A code check gives the same result every time and has tests. |
 | The model gets up to 2 chances to fix a rejected answer. | Most rejected drafts have a small fault, for example a calculation without a label. One more attempt is cheaper than a failed question. |
+| The answer is rendered as Markdown with `react-markdown`, and raw HTML is not rendered. | Answers use tables and lists. The model output is untrusted text, so it must not be able to add HTML to the page. |
+| The empty chat reads the covered companies and years from the API (`GET /corpus`). | A list in the frontend code would be wrong as soon as filings are added. |
 | The chat model is pinned to a dated version and checked with the answer eval. | An alias such as `~latest` can change the model without a warning, and an unchecked model can cite passages incorrectly. |
 
 The full reasoning is in [docs/architecture.md](docs/architecture.md) and [CLAUDE.md](CLAUDE.md).
